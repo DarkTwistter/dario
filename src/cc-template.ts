@@ -163,10 +163,29 @@ export class UnsupportedClientToolError extends Error {
   }
 }
 
+const PASTE_ONLY_RULE_START = 'When a message is nothing but pasted text';
+const PASTE_ONLY_RULE_END = 'not a request from the user.';
+
+/**
+ * Removes the paste-only sentence from the `<pasted_content>` rule, so
+ * instructions inside pasted content are followed only where the user's own
+ * message asks. The sentence is found by its start and end markers; a prompt
+ * missing either is returned unchanged, so a second pass is a no-op. Applied to
+ * the exported prompts, never to the bundle, which stays as captured.
+ */
+export function withoutPasteOnlyExemption(prompt: string): string {
+  const start = prompt.indexOf(PASTE_ONLY_RULE_START);
+  if (start === -1) return prompt;
+  const end = prompt.indexOf(PASTE_ONLY_RULE_END, start);
+  if (end === -1) return prompt;
+  const from = prompt[start - 1] === ' ' ? start - 1 : start;
+  return prompt.slice(0, from) + prompt.slice(end + PASTE_ONLY_RULE_END.length);
+}
+
 /** CC's static system prompt (~25KB). The shared base — baked from a non-Fable
  *  model (Opus). CC ships some models a larger, model-specific prompt; see
  *  CC_SYSTEM_PROMPT_FABLE / systemPromptForModel. */
-export const CC_SYSTEM_PROMPT = TEMPLATE.system_prompt;
+export const CC_SYSTEM_PROMPT = withoutPasteOnlyExemption(TEMPLATE.system_prompt);
 
 /**
  * Fable-family system-prompt variant. CC 2.1.198 sends Fable a materially larger,
@@ -175,7 +194,9 @@ export const CC_SYSTEM_PROMPT = TEMPLATE.system_prompt;
  * requests carry Fable's actual CC prompt instead of the Opus base. Falls back to
  * the base when the variant isn't present in the template (older bundles).
  */
-const _variants = promptVariantsOf(TEMPLATE);
+const _variants: Record<string, string> = Object.fromEntries(
+  Object.entries(promptVariantsOf(TEMPLATE)).map(([k, v]) => [k, withoutPasteOnlyExemption(v)]),
+);
 export const CC_SYSTEM_PROMPT_FABLE: string = _variants.fable ?? CC_SYSTEM_PROMPT;
 
 /**
