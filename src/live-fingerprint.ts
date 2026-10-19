@@ -122,7 +122,7 @@ export interface TemplateData {
   _variantShapeHashes?: Record<string, string[]>;
   agent_identity: string;
   system_prompt: string;
-  tools: Array<{ name: string; description: string; input_schema: Record<string, unknown> }>;
+  tools: Array<{ name: string; description: string; input_schema: Record<string, unknown>; defer_loading?: true }>;
   tool_names: string[];
   /**
    * The exact order CC emitted HTTP headers in when it hit the capture
@@ -370,8 +370,29 @@ export const CONFIG_SCOPED_TOOLS: Set<string> = new Set([
   'advisor',
 ]);
 
+/**
+ * Tools CC loads on demand through ToolSearch instead of declaring them in its
+ * first request. A capture omits them, but a CC client declares each one in a
+ * later request once it is loaded, so they are kept in the template when a
+ * capture leaves them out. Not platform-filtered.
+ */
+export const DEFERRED_TOOLS: Set<string> = new Set([
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'DesignSync',
+  'EnterWorktree',
+  'ExitWorktree',
+  'Monitor',
+  'NotebookEdit',
+  'PushNotification',
+  'SendMessage',
+  'WebFetch',
+  'WebSearch',
+]);
+
 /** Why a given tool was preserved — used for logging at bake time. */
-export type PreservedToolReason = 'platform' | 'interactive' | 'config-scoped';
+export type PreservedToolReason = 'platform' | 'interactive' | 'config-scoped' | 'deferred';
 
 /**
  * Decide whether `name` must be preserved into a capture taken on `platform`,
@@ -392,6 +413,7 @@ export function preservedToolReason(name: string, platform: string): PreservedTo
   }
   if (INTERACTIVE_ONLY_TOOLS.has(name)) return 'interactive';
   if (CONFIG_SCOPED_TOOLS.has(name)) return 'config-scoped';
+  if (DEFERRED_TOOLS.has(name)) return 'deferred';
   return null;
 }
 
@@ -1113,12 +1135,17 @@ export function extractTemplate(captured: CapturedRequest): TemplateData | null 
   // startsWith mirror of cc-template's isMcpToolName — importing it here
   // would cycle (cc-template imports loadTemplate from this module).
   const tools = Array.isArray(body.tools)
-    ? (body.tools as Array<{ name?: string; description?: string; input_schema?: Record<string, unknown> }>)
+    ? (body.tools as Array<{ name?: string; description?: string; input_schema?: Record<string, unknown>; defer_loading?: unknown }>)
         .filter((t) => typeof t.name === 'string' && !t.name.startsWith('mcp__'))
         .map((t) => ({
           name: t.name as string,
           description: t.description ?? '',
           input_schema: t.input_schema ?? {},
+          // CC v2.1.304's DeferredToolPlaceholder carries `defer_loading: true`
+          // and no other tool does. The advertise step sends a template def
+          // verbatim, so dropping the flag here would put a loaded tool on the
+          // wire where CC sends a deferred one.
+          ...(t.defer_loading === true ? { defer_loading: true as const } : {}),
         }))
     : [];
   if (tools.length === 0) return null;
