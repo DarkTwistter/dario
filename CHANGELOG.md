@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **The `cc-oauth-health` workflow is retired.** That health signal is monitored outside the repository, so the scheduled job duplicated it. No change to the package's behavior.
+
 ## [6.13.22] - 2026-10-20
 
 - **The bundled tool list gains `DeferredToolPlaceholder` and `ToolSearch`.**
