@@ -29,7 +29,7 @@
 
 import { describe, it } from 'node:test';
 import { spawn } from 'node:child_process';
-import { readdirSync, mkdtempSync } from 'node:fs';
+import { readdirSync, mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -84,7 +84,11 @@ const suiteTemplateCache = join(suiteTmp, 'cc-template.live.json');
 // it at their own path in-process.
 // And no suite reads a seat's usage from the network on its own: the proxy's
 // /wham/usage seeding is off unless a file turns it on against its own stub.
-const childEnv = { ...process.env, DARIO_LIVE_TEMPLATE_CACHE: suiteTemplateCache, DARIO_LEDGER_PATH: join(suiteTmp, 'ledger.json'), DARIO_CODEX_USAGE_POLL_MS: process.env.DARIO_CODEX_USAGE_POLL_MS ?? '0' };
+// And every port helpers/free-port.mjs hands out is reserved here, across all
+// files, so two files running at once never draw the same number.
+const suitePorts = join(suiteTmp, 'ports');
+mkdirSync(suitePorts);
+const childEnv = { ...process.env, DARIO_LIVE_TEMPLATE_CACHE: suiteTemplateCache, DARIO_LEDGER_PATH: join(suiteTmp, 'ledger.json'), DARIO_CODEX_USAGE_POLL_MS: process.env.DARIO_CODEX_USAGE_POLL_MS ?? '0', DARIO_TEST_PORT_DIR: suitePorts };
 
 // One file, one subprocess. Returns { code, out }.
 const runFile = (f) => new Promise((resolve, reject) => {
@@ -106,8 +110,15 @@ const runFile = (f) => new Promise((resolve, reject) => {
 // port it never chose (dario#1291's `test` job: codex-refresh-failure-ttl,
 // every listener on freePort()). That is the harness colliding with itself,
 // not the code under test, so a file whose only failure is that error is
-// run once more; every other failure is reported as it is.
-const PORT_RACE = /EADDRINUSE/;
+// run once more; every other failure is reported as it is. startProxy reports
+// the same collision as "Port N is already in use by another process", with
+// no errno in the output, so both messages count.
+const PORT_RACE = /EADDRINUSE|already in use by another process/;
+// The quiet form of the same collision: startProxy found ANOTHER dario on its
+// port, printed "already running" and exited 0, so the file "passed" having
+// tested nothing. No test asks for that path, so it is a collision, never a
+// pass, and the file runs once more whatever its exit code.
+const RAN_AGAINST_ANOTHER_DARIO = /already running on http:/;
 
 // Each file is one `it`, so the reporter's `# tests` is the file count (live-test.yml
 // prints it as `test(N/N)`).
@@ -117,11 +128,12 @@ describe('test/*.mjs', { concurrency: CONCURRENCY }, () => {
   for (const f of files) {
     it(f, async () => {
       let { code, out } = await runFile(f);
-      if (code !== 0 && PORT_RACE.test(out)) {
-        console.log(`  ${f}: EADDRINUSE (free-port race) — running once more`);
+      if ((code !== 0 && PORT_RACE.test(out)) || RAN_AGAINST_ANOTHER_DARIO.test(out)) {
+        console.log(`  ${f}: port collision (free-port race), running once more`);
         ({ code, out } = await runFile(f));
       }
       if (code !== 0) throw new Error(`\n--- ${f} exited with code ${code} ---\n${out}`);
+      if (RAN_AGAINST_ANOTHER_DARIO.test(out)) throw new Error(`\n--- ${f} ran against another dario on its port twice ---\n${out}`);
     });
   }
 });

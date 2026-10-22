@@ -19,17 +19,39 @@
 // call asks. dario#1323's live-test hit exactly that: `codex-pool-seat-
 // rotation.mjs` drew 39989 for both CODEX_PORT and PROXY_PORT, the stub
 // bound it first, and startProxy died with "Port 39989 is already in use by
-// another process" — which is not the string all.test.mjs's EADDRINUSE
-// retry matches, so the file failed outright. `issued` remembers every port
+// another process", which all.test.mjs's retry did not match at the time,
+// so the file failed outright. `issued` remembers every port
 // this process has handed out and re-draws past it.
+//
+// `issued` is per process, and all.test.mjs runs several files at once. When
+// DARIO_TEST_PORT_DIR is set, it names a directory shared by every file in
+// the run, and a port is handed out only once a file named after it can be
+// created there with `wx`. That create is atomic and fails if the file
+// exists, so each number goes to one file per run. Without the variable,
+// only `issued` applies.
 //
 // Lives in a subdirectory so all.test.mjs (top-level *.mjs only) does not run
 // it as a test.
 
 import { createServer } from 'node:net';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /** Every port already handed out in this process — never reissued. */
 const issued = new Set();
+
+/** Claim a port for the whole suite run; false if another file already has it. */
+function reserve(port) {
+  const dir = process.env.DARIO_TEST_PORT_DIR;
+  if (!dir) return true;
+  try {
+    writeFileSync(join(dir, String(port)), String(process.pid), { flag: 'wx' });
+    return true;
+  } catch (err) {
+    if (err.code === 'EEXIST') return false;
+    throw err;
+  }
+}
 
 /** @returns {Promise<number>} */
 function drawPort() {
@@ -51,10 +73,9 @@ export async function freePort() {
   // the range is somehow exhausted.
   for (let attempt = 0; attempt < 50; attempt++) {
     const port = await drawPort();
-    if (!issued.has(port)) {
-      issued.add(port);
-      return port;
-    }
+    if (issued.has(port)) continue;
+    issued.add(port);
+    if (reserve(port)) return port;
   }
   throw new Error('freePort: could not find an unused loopback port in 50 attempts');
 }
