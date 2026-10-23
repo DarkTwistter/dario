@@ -14,7 +14,14 @@ import {
   bumpPackageJsonPatch,
   promoteUnreleased,
   syncLockfileVersion,
+  buildPrBody,
+  addPinnedVersion,
 } from '../scripts/_drift-patch-helpers.mjs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, copyFileSync, rmSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 let pass = 0, fail = 0;
 function check(name, cond) {
@@ -321,5 +328,73 @@ header('syncLockfileVersion — agrees with a package.json patch bump');
 }
 
 // ─────────────────────────────────────────────────────────────
+header('buildPrBody: what changes for users, no process text');
+{
+  const body = buildPrBody('2.1.309', '2.1.308', '6.13.30', true, true);
+  check('names the new version and the old ceiling', body.includes('Claude Code 2.1.309') && body.includes('2.1.308'));
+  check('names the package version and the pinned list', body.includes('6.13.30') && body.includes('test/compat-pinned.json') && body.includes('lists 2.1.309'));
+  check('no headings, lists or workflow names', !/^#|^- |^\d\./m.test(body) && !/\.yml|Drafted|Merge|Release:|Scope/.test(body));
+  check('no em or en dash', !/[\u2013\u2014]/.test(body));
+  const unpinned = buildPrBody('2.1.309', '2.1.308', '6.13.30', false, true);
+  check('without the version listed: says so, never that it is listed', unpinned.includes('2.1.309 is not in') && !unpinned.includes('lists 2.1.309'));
+  const sentences = (t) => (t.match(/[.!?](?=\s|$)/g) ?? []).length;
+  check('two sentences either way', sentences(body) === 2 && sentences(unpinned) === 2);
+  check('without the case: no em or en dash', !/[\u2013\u2014]/.test(unpinned));
+  check('with the changelog written: says it has an entry', body.includes('the changelog has an entry') && unpinned.includes('the changelog has an entry'));
+  const noLog = [buildPrBody('2.1.309', '2.1.308', '6.13.30', true, false), buildPrBody('2.1.309', '2.1.308', '6.13.30', false, false)];
+  check('without the changelog written: never claims an entry, says there is none', noLog.every((t) => !t.includes('the changelog has an entry') && t.includes('has no entry for it')));
+  check('without the changelog written: still two sentences', noLog.every((t) => sentences(t) === 2));
+}
+
+header('auto-draft-drift-fix.mjs end to end: the body matches whether the version was listed');
+{
+  // The drafter patches the files under its own repo root, so each case runs a copy of it in a
+  // scratch directory with just the files it reads.
+  const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const files = ['scripts/auto-draft-drift-fix.mjs', 'scripts/_drift-patch-helpers.mjs', 'src/live-fingerprint.ts', 'package.json', 'package-lock.json', 'CHANGELOG.md', 'test/compat-pinned.json'];
+  const maxTested = /maxTested:\s*'(\d+\.\d+\.\d+)'/.exec(readFileSync(join(repo, 'src/live-fingerprint.ts'), 'utf8'))?.[1];
+  const [a, b, c] = String(maxTested).split('.').map(Number);
+  const next = `${a}.${b}.${c + 1}`;
+  const LIST = 'test/compat-pinned.json';
+  const draft = (list, changelog) => {
+    const dir = mkdtempSync(join(tmpdir(), 'drift-draft-'));
+    try {
+      for (const f of files) { mkdirSync(dirname(join(dir, f)), { recursive: true }); copyFileSync(join(repo, f), join(dir, f)); }
+      if (list === null) rmSync(join(dir, LIST));
+      else if (list !== undefined) writeFileSync(join(dir, LIST), list);
+      if (changelog === null) rmSync(join(dir, 'CHANGELOG.md'));
+      writeFileSync(join(dir, 'report.json'), JSON.stringify({ drift: true, ccVersion: next, pinned: { maxTested }, items: [{ category: 'compat.range', severity: 'medium', message: 'above the range' }] }));
+      const r = spawnSync(process.execPath, [join(dir, 'scripts/auto-draft-drift-fix.mjs'), join(dir, 'report.json')], { encoding: 'utf8' });
+      return { out: JSON.parse(r.stdout), list: list === null ? null : readFileSync(join(dir, LIST), 'utf8') };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const ok = draft(undefined);
+  check('a list: fixed, the version is added and staged', ok.out.fixed === true && ok.out.changedFiles.includes(LIST) && JSON.parse(ok.list).at(-1) === next);
+  check('a list: the body says it is listed', ok.out.prBody.includes(`lists ${next}`));
+  const bad = draft('not json\n');
+  check('not a list: fixed, the file is left alone and not staged', bad.out.fixed === true && !bad.out.changedFiles.includes(LIST) && bad.list === 'not json\n');
+  check('not a list: the body says the version is not listed', bad.out.prBody.includes(`${next} is not in`) && !bad.out.prBody.includes(`lists ${next}`));
+  const gone = draft(null);
+  check('no list: fixed, not staged, the body says the version is not listed', gone.out.fixed === true && !gone.out.changedFiles.includes(LIST) && gone.out.prBody.includes(`${next} is not in`));
+  check('a changelog: staged, the body says it has an entry', ok.out.changedFiles.includes('CHANGELOG.md') && ok.out.prBody.includes('the changelog has an entry'));
+  const noLog = draft(undefined, null);
+  check('no changelog: fixed, not staged, the body says it has no entry', noLog.out.fixed === true && !noLog.out.changedFiles.includes('CHANGELOG.md') && !noLog.out.prBody.includes('the changelog has an entry') && noLog.out.prBody.includes('has no entry for it'));
+}
+
+header('addPinnedVersion: appends to the list test/compat-range.mjs checks');
+{
+  const real = readFileSync(new URL('./compat-pinned.json', import.meta.url), 'utf8');
+  const out = addPinnedVersion(real, '9.9.9');
+  check('appends the version', out !== null && JSON.parse(out).at(-1) === '9.9.9');
+  check('keeps the versions already listed', out !== null && JSON.stringify(JSON.parse(out).slice(0, -1)) === JSON.stringify(JSON.parse(real)));
+  check('a listed version: the text unchanged', out !== null && addPinnedVersion(out, '9.9.9') === out);
+  check('not JSON: null', addPinnedVersion('// not json', '9.9.9') === null);
+  check('not a list of versions: null', addPinnedVersion('{"a":1}', '9.9.9') === null && addPinnedVersion('["x"]', '9.9.9') === null);
+  check('not x.y.z: null', addPinnedVersion(real, "9.9.9'); evil('") === null);
+  check('compat-range.mjs reads the list', readFileSync(new URL('./compat-range.mjs', import.meta.url), 'utf8').includes("new URL('./compat-pinned.json', import.meta.url)"));
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

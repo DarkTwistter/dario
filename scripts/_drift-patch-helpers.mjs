@@ -225,3 +225,38 @@ export function syncLockfileVersion(lockJsonString, version) {
   }
   return JSON.stringify(lock, null, 2) + '\n';
 }
+
+/**
+ * Build the user-facing summary for an automated compatibility update. pinnedTest says whether
+ * test/compat-pinned.json lists ccVersion, and changelogEntry whether CHANGELOG.md was given an
+ * entry for newDarioVersion; the body claims neither unless it is true.
+ */
+export function buildPrBody(ccVersion, before, newDarioVersion, pinnedTest, changelogEntry) {
+  const pkg = changelogEntry
+    ? `The package version is ${newDarioVersion} and the changelog has an entry for it`
+    : `The package version is ${newDarioVersion}, but the changelog could not be updated and has no entry for it`;
+  return [
+    `Claude Code ${ccVersion} is now in \`SUPPORTED_CC_RANGE\` (the ceiling was ${before}), so \`dario doctor\` and proxy startup no longer warn that it is untested.`,
+    '',
+    pinnedTest
+      ? `${pkg}; \`test/compat-pinned.json\` lists ${ccVersion}, so \`test/compat-range.mjs\` checks it stays supported.`
+      : `${pkg}; ${ccVersion} is not in \`test/compat-pinned.json\`, so this PR does not guard against the bump being reverted.`,
+  ].join('\n');
+}
+
+/**
+ * Add a newly supported Claude Code version to test/compat-pinned.json, the list test/compat-range.mjs
+ * checks is inside the tested range. The range case reads maxTested itself, so it still passes with
+ * the bump reverted; a listed version does not. Returns the new file text (the text unchanged when
+ * the version is already listed), or null when the version is not x.y.z or the text is not a JSON
+ * list of version strings.
+ */
+export function addPinnedVersion(jsonText, version) {
+  const isVersion = (v) => typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v);
+  if (!isVersion(version)) return null;
+  let list;
+  try { list = JSON.parse(jsonText); } catch { return null; }
+  if (!Array.isArray(list) || !list.every(isVersion)) return null;
+  if (list.includes(version)) return jsonText;
+  return JSON.stringify([...list, version], null, 2) + '\n';
+}
