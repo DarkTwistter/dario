@@ -124,6 +124,8 @@ curl http://localhost:3456/analytics    # per-account / per-model stats, burn ra
 
 **When every seat is parked.** A pool whose seats are all `rejected` inside live windows does not probe them again: dario answers the request itself with `429`, `retry-after` set to the earliest reset, `x-dario-upstream-rejection: pool_parked`, and nothing sent upstream. One log line marks the transition (`pool parked: all 6 seats are over their rate-limit windows, earliest resets in 21m`). Before 6.0.35 every such request re-probed the earliest-reset seat, so `rejectedCount` on that seat grew by one per request — a seat reading `rejected_count: 500` next to `request_count: 1` was that, not a seat that needed a re-login. With a `--pool-fallback` armed, the request goes to the fallback instead, as before.
 
+**A seat parked on one family's bucket stays parked for it.** A seat parked on a per-model bucket counts for the families that bucket binds even after it has served another family since: an Opus `200` (or an Opus `429` that names no exhausted window) after a Fable credit `429` does not make it probeable for Fable again before the bucket resets.
+
 **Spending extra usage while the pool is parked (dario#1282).** The parked answer is decided
 from the seats' own rate-limit verdicts, before anything is sent. Disarming the overage-guard
 does **not** change it: the guard is reactive — it reads the `representative-claim` on a
