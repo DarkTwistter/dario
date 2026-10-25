@@ -8,13 +8,13 @@ Every surface below is a view over those two. Nothing here collects anything new
 
 | path | what | format |
 |---|---|---|
-| `GET /analytics` | window summary + `queue` snapshot + `lifetime` ledger summary | JSON |
-| `GET /analytics/ledger` | the ledger's per-day table | JSON |
+| `GET /analytics` | window summary (with `window.perFiveMinutes`, the hour in twelve bins) + `queue` snapshot + `overage` (the halt state, for a reader who cannot open `/admin/resume`) + `lifetime` ledger summary | JSON |
+| `GET /analytics/ledger` | the ledger's per-day table, with `priced`: the same rows as USD at each day's rate | JSON |
 | `GET /analytics/stream` | live tail of request records (drives the TUI) | SSE |
 | `GET /metrics` | the same state as Prometheus text exposition | text/plain 0.0.4 |
 | `GET /analytics/donuts.svg` | spend by model / by key / by billing | SVG |
-| `GET /analytics/view` | server-rendered dashboard body | HTML fragment |
-| `GET /analytics/ui` | the dashboard shell (no data; asks for the token, loads `/view` every 60 s) | HTML page |
+| `GET /analytics/view` | the server-rendered summary (the page before 6.17; still served) | HTML fragment |
+| `GET /analytics/ui` | the dashboard (no data of its own; asks for the token, then reads the routes above, `/accounts`, `/codex` and `/health` with it and tails `/analytics/stream`) | HTML page |
 
 CLI: `dario usage` prints the ledger; `--json` dumps `/analytics`; `--card[=file]` writes the share card; `--donut[=file]` writes the three rings.
 
@@ -24,7 +24,7 @@ By default the proxy binds loopback and these paths need no credential. With `DA
 
 `--analytics-token=<secret>` (or `DARIO_ANALYTICS_TOKEN`) adds a **read-only** credential accepted on exactly the paths in the table above, on `GET` only. It is refused on `/v1/*`, `/accounts`, `/status`, `/admin/*`, and any non-GET. That is the point: a Grafana box or a browser tab can hold the numbers without holding request rights. The root key keeps working on the analytics paths too. On an unkeyed proxy the token gates nothing, and the proxy says so at startup.
 
-`/analytics/ui` itself is served without a credential because it contains no data. It stores the token you type in `sessionStorage` and sends it as a bearer on every fetch of `/analytics/view`.
+`/analytics/ui` itself is served without a credential because it contains no data. It stores the token you type in `sessionStorage` and sends it as a bearer on every read. With the analytics token it shows spend, routing, the live feed and the ledger; the seats panel needs an API key, because `/accounts` and `/codex` refuse the read-only token, and the keys panel needs the admin API (`DARIO_ADMIN=1`, the admin token). The page loads nothing from outside the proxy, follows the system theme (with a toggle), has a table view behind every chart, and opened from disk (`dist/analytics-ui.html`) it runs on sample data.
 
 ## `/metrics` families
 
@@ -39,14 +39,16 @@ Names ending in `_total` are counters; everything else is a gauge. Labels are es
 | `dario_account_requests_total`, `dario_account_estimated_cost_usd`, `dario_account_utilization{window}` | `account`, `window` ∈ 5h, 7d | last rate-limit headers per seat |
 | `dario_model_requests_total`, `dario_model_estimated_cost_usd` | `model` | since start |
 | `dario_consumer_requests_total`, `dario_consumer_estimated_cost_usd` | `consumer` (named key or `x-dario-consumer`) | since start |
-| `dario_queue_active`, `_queued`, `_max_concurrent`, `_max_queued`, `_stalled`, `_max_wait_ms`, `_consumers_active` | — | request queue |
+| `dario_queue_active`, `_queued`, `_max_concurrent`, `_max_queued`, `_stalled`, `_max_wait_ms`, `_consumers_active` | (none) | request queue |
 | `dario_request_latency_ms{quantile}` + `_sum`, `_count` | `quantile` ∈ 0.5, 0.9, 0.99 | nearest-rank over the most recent 1,000 records |
 | `dario_queue_wait_ms`, `dario_pacing_wait_ms`, `dario_upstream_ttfb_ms`, `dario_upstream_latency_ms`, `dario_overhead_ms` — each `{quantile}` + `_sum`, `_count` | `quantile` ∈ 0.5, 0.9, 0.99 | the timing split (below), nearest-rank over the recent records that carry one |
 | `dario_window_avg_upstream_ttfb_ms`, `_avg_upstream_latency_ms`, `_avg_overhead_ms`, `_avg_queue_wait_ms`, `_avg_pacing_wait_ms` | `window_minutes` | the split averaged over the rolling window; omitted until a request has carried one |
-| `dario_predicted_exhaustion_minutes` (omitted when unknown), `dario_burn_tokens_per_minute`, `dario_burn_cost_usd_per_minute` | — | window predictions |
+| `dario_predicted_exhaustion_minutes` (omitted when unknown), `dario_burn_tokens_per_minute`, `dario_burn_total_tokens_per_minute`, `dario_burn_cost_usd_per_minute` | (none) | window predictions |
 | `dario_ledger_requests_total`, `_api_equivalent_usd`, `_metered_usd`, `_recent_api_equivalent_usd{window}`, `_model_api_equivalent_usd{model,provider}`, `_model_requests_total{model,provider}`, `_consumer_api_equivalent_usd{consumer}` | `window` ∈ today, 7d, 30d | ledger (absent when the ledger is off) |
 
 `dario_request_latency_ms` is the number dario has always kept: dispatch to response end, as the client saw it. Since 6.9 every request also carries the split below, so the one figure can be read as its parts.
+
+The two token burn gauges differ in scope: `dario_burn_tokens_per_minute` is input and output only, cache reads and writes are not in it, while `dario_burn_total_tokens_per_minute` counts every kind. On a cached prompt the second is many times the first. `/analytics` carries the same pair as `predictions.tokenBurnRate` and `predictions.totalTokenBurnRate`.
 
 ## The timing split
 

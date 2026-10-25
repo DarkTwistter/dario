@@ -22,7 +22,7 @@ import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
 import { renderPrometheus } from './metrics.js';
-import { renderSpendDonuts, renderAnalyticsView, ANALYTICS_UI_SHELL } from './donuts.js';
+import { renderSpendDonuts, renderAnalyticsView, analyticsUiPage } from './donuts.js';
 import { KeyStore, keyAllowsModel, resolveKeysPath, looksLikeNamedKey, budgetVerdict, budgetHeaders, formatBudget, requestBudgetReservation, addReservation, subtractReservation, EMPTY_RESERVATION, type KeyRecord, type KeyBudgetReservation, type KeySocket } from './keys.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
@@ -3278,11 +3278,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       if (handled) return;
     }
 
-    // The dashboard shell carries no data, so it needs no credential: it is
-    // the page that ASKS for the token and then fetches /analytics/view.
+    // The dashboard page carries no data, so it needs no credential: it asks
+    // for the token, then reads /analytics, /accounts, /codex, /health, the
+    // ledger and the keys with it and tails /analytics/stream (donuts.ts).
     if (urlPath === '/analytics/ui' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
-      res.end(ANALYTICS_UI_SHELL);
+      res.end(analyticsUiPage());
       return;
     }
 
@@ -3467,7 +3468,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // `queue` rides along the summary (dario#905): request-queue.ts always
       // documented snapshot() as "exposed for /analytics", but it was never
       // actually wired in, so slot exhaustion was invisible from outside.
-      res.end(JSON.stringify({ ...analytics.summary(), queue: queue.snapshot(), lifetime: ledger ? ledger.summary() : null, budgets: keyBudgetsSnapshot() }));
+      // `overage` is the halt state for every reader of this route (the
+      // dashboard, dario#1734): the stream replays a halt only while one is
+      // in force and the analytics token cannot read /admin/resume, so a
+      // viewer that saw the halt and missed the resume resyncs from here.
+      res.end(JSON.stringify({ ...analytics.summary(), queue: queue.snapshot(), overage: { halted: overageGuard.isHalted(), state: overageGuard.state() }, lifetime: ledger ? ledger.summary() : null, budgets: keyBudgetsSnapshot() }));
       return;
     }
 
@@ -3510,7 +3515,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     }
 
     // The ledger's per-day table, for anyone charting it. `lifetime` on
-    // /analytics is the summary; this is the data behind it.
+    // /analytics is the summary; this is the data behind it. `priced` is the
+    // same rows as USD at each day's rate (ledger.ts), so a reader, the
+    // dashboard first, never needs a price list of its own.
     if (urlPath === '/analytics/ledger' && req.method === 'GET') {
       if (!ledger) {
         res.writeHead(404, JSON_HEADERS);
@@ -3518,7 +3525,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         return;
       }
       res.writeHead(200, JSON_HEADERS);
-      res.end(JSON.stringify({ path: ledger.path, ...ledger.snapshot() }));
+      res.end(JSON.stringify({ path: ledger.path, ...ledger.snapshot(), priced: ledger.priced() }));
       return;
     }
 

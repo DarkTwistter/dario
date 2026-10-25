@@ -10,7 +10,7 @@
  *     names, queue numbers when present
  *   - the UI shell carries no data and no inline token
  */
-import { donutSlices, donutPaths, renderSpendDonuts, renderAnalyticsView, ANALYTICS_UI_SHELL, escapeHtml } from '../dist/donuts.js';
+import { donutSlices, donutPaths, renderSpendDonuts, renderAnalyticsView, analyticsUiPage, analyticsUiLoader, escapeHtml } from '../dist/donuts.js';
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -87,8 +87,18 @@ header('renderAnalyticsView');
 
 header('shell');
 {
-  check('shell is html with the fetch to /analytics/view', ANALYTICS_UI_SHELL.startsWith('<!doctype html>') && ANALYTICS_UI_SHELL.includes("fetch('/analytics/view'"));
-  check('shell carries no numbers or tokens', !/\$\d/.test(ANALYTICS_UI_SHELL) && !ANALYTICS_UI_SHELL.includes('dk_'));
+  const shell = analyticsUiPage();
+  check('the page is a full document that knows it is served', shell.startsWith('<!doctype html>') && shell.includes('<title>dario</title>') && shell.includes('window.DARIO_COCKPIT="served"'));
+  check('the page reads the live routes it is served next to', ["'/analytics'", "'/analytics/stream'", "'/accounts'", "'/codex'", "'/health'", "'/analytics/ledger'", "'/admin/keys'", "'/admin/resume'"].every((r) => shell.includes(r)));
+  check('the page carries no key material and loads nothing external', !shell.includes('dk_') && !/<link /.test(shell) && !/<script[^>]+src=/.test(shell) && !/fonts\.g/.test(shell));
+  check('the served page is the whole file, not the missing-file notice', shell.length > 50000 && !shell.includes('This build is missing'));
+  let reads = 0;
+  const load = analyticsUiLoader(() => { reads++; return `<!doctype html>page ${reads}`; });
+  check('the file is read once; every later call is the kept text, with no read', load() === '<!doctype html>page 1' && load() === '<!doctype html>page 1' && load() === '<!doctype html>page 1' && reads === 1, reads);
+  let tries = 0;
+  const late = analyticsUiLoader(() => { tries++; if (tries < 2) throw new Error('ENOENT'); return '<!doctype html>late'; });
+  const first = late();
+  check('a missing file is a page that says so and is kept for nobody: the next request reads again and keeps that', first.includes('This build is missing') && first.includes('npm run build') && late() === '<!doctype html>late' && late() === '<!doctype html>late' && tries === 2, `${tries} ${first.slice(0, 80)}`);
   check('escapeHtml covers the five', escapeHtml(`&<>"'`) === '&amp;&lt;&gt;&quot;&#39;');
 }
 
