@@ -16,7 +16,7 @@
 
 <p><strong>One local endpoint. Every AI tool you own. Your Claude seats first, your ChatGPT plan and a metered key as the rungs you chain behind them, and a ledger of who paid for what.</strong></p>
 
-<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~41k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
+<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~42k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
 
 <sub><a href="#start-in-60-seconds">Start</a> · <a href="#why-people-pick-it">Why dario</a> · <a href="#what-it-does-with-a-request">Routing</a> · <a href="#will-my-account-get-suspended">Risk</a> · <a href="#reference">Reference</a> · <a href="#trust--transparency">Trust</a> · <a href="docs/returning.md">Coming back after a while?</a></sub>
 
@@ -51,7 +51,7 @@ Prefer Docker? `ghcr.io/askalf/dario:latest`, multi-arch (`amd64` + `arm64`), pu
 
 - **Every tool, one URL.** No per-tool keys and no second bill: anything with a base-URL setting runs on the plan you already pay for. [Per-tool setup](docs/tools.md)
 - **Knows who paid.** A ledger prices every request at API rates and splits it by plan, by key and by model: what the seats absorbed, what went to extra usage or an API key. In the TUI, the dashboard at `/analytics/ui`, `/analytics`, Prometheus `/metrics` and `dario usage`. [Analytics](docs/pool-keys-and-analytics.md#what-it-would-have-cost)
-- **Spends the plan before the meter.** Seats with headroom first, then the `--pool-fallback` chain you configure: the other plan on a 429, a metered backend last. No chain means no substitution, a drained pool returns its honest 429. Nothing is swapped silently: every substituted response says so in a header. [Failover](docs/two-plans.md#failover-between-subscriptions)
+- **Spends the plan before the meter.** Seats with headroom first, then the `--pool-fallback` chain you configure: the other plan on a 429, a metered rung last (your Max plan's API credits through a Console key, or an openai-compat backend). No chain means no substitution, a drained pool returns its honest 429. Nothing is swapped silently: every substituted response says so in a header. [Failover](docs/two-plans.md#failover-between-subscriptions)
 - **Either plan, either wire shape.** Your ChatGPT plan behind Claude Code and the Anthropic SDKs; Codex CLI on your Claude plan. [Two plans](docs/two-plans.md)
 - **Failover that finishes the answer.** A 429 on one plan is re-served by the other, and a stream that dies mid-answer is completed on the same model first. [Failover](docs/two-plans.md#failover-between-subscriptions)
 - **Many seats, one endpoint.** Per-model headroom routing, session-sticky prompt cache, in-flight 429 failover across every seat you hold. New conversations go to the seat with the most headroom by default; `--pool-strategy=fill-first` fills seats in alias order and `expiring-first` spends the seat whose weekly window resets soonest. The active strategy shows in the startup banner, `GET /status`, `dario doctor` and `dario accounts list`. [The pool](docs/pool-keys-and-analytics.md)
@@ -113,7 +113,7 @@ dario runs entirely on your machine, authenticates as you with your own Claude l
 
 | Signal | Status |
 |---|---|
-| Source | **~41k** lines of TypeScript across **79** files, auditable in a weekend. One credential path since v5: the pool. |
+| Source | **~42k** lines of TypeScript across **85** files, auditable in a weekend. One credential path since v5: the pool. |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore, published with OIDC trusted publishing: no long-lived npm token exists to leak |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push to master, every PR and weekly · [ClusterFuzzLite](./.github/workflows/cflite.yml) fuzzes the SSE translator, the rejection parsers and the cch stamper weekly · the [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/askalf/dario) badge above and the [Best Practices](https://www.bestpractices.dev/projects/13638) entry are live |
