@@ -25,8 +25,8 @@ import {
   CODEX_BACKEND_BASE_URL,
 } from '../dist/codex-backend.js';
 import { route, poolFallbackOutcome, codexAdapter, claudeAdapter, openaiAdapter } from '../dist/provider-adapter.js';
-import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickClaudeFallback, CODEX_SUPPORTED_FIELDS, logUnsupportedChatFields, chatFieldReachesCodex } from '../dist/codex-backend.js';
-import { codexPromptCacheKey, chatCompletionsUsage, splitResponsesUsage } from '../dist/codex-backend.js';
+import { forwardToCodex, forwardResponsesToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickClaudeFallback, CODEX_SUPPORTED_FIELDS, logUnsupportedChatFields, chatFieldReachesCodex } from '../dist/codex-backend.js';
+import { codexPromptCacheKey, chatCompletionsUsage, splitResponsesUsage, _resetCacheTraceForTest } from '../dist/codex-backend.js';
 import { isClaudeServableModel, resolveClaudeServable } from '../dist/claude-model.js';
 
 let pass = 0, fail = 0;
@@ -1443,6 +1443,141 @@ header('cached tokens — reach the client on the Anthropic wire and the analyti
     CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, {}), false, (o) => outcomesP.push(o));
   check('no details upstream → outcome cache fields are 0 and input is the plain count',
     outcomesP.length === 1 && outcomesP[0].cacheReadTokens === 0 && outcomesP[0].cacheCreateTokens === 0 && outcomesP[0].inputTokens === 11, outcomesP[0]);
+}
+
+// ---------------------------------------------------------------- cache trace on the outcome
+header('forwardToCodex: the outcome carries the cache trace');
+{
+  _resetCacheTraceForTest();
+  const session = { metadata: { user_id: 'session_cache_trace' }, model: 'gpt-5.6-sol', system: 'You are terse.', max_tokens: 50 };
+  const tools = [{ name: 'read', description: 'r', input_schema: { type: 'object', properties: {} } }];
+  const turn1 = { ...session, tools, messages: [{ role: 'user', content: 'brief' }] };
+  const turn2 = { ...session, tools, messages: [
+    { role: 'user', content: 'brief' },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'call_1', name: 'read', input: { path: 'a' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'contents of a' }] },
+  ] };
+  const rewritten = { ...session, tools, messages: [{ role: 'user', content: 'a different brief' }] };
+  const outcomes = [];
+  const sent = {};
+  for (const body of [turn1, turn2, rewritten]) {
+    await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify(body)), CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(TEXT_STREAM, sent), false, (o) => outcomes.push(o));
+  }
+  const [first, second, third] = outcomes.map((o) => o.cache);
+  check('every outcome carries a trace under the key that went out', outcomes.length === 3 && outcomes.every((o) => o.cache && o.cache.key === sent.body.prompt_cache_key), outcomes.map((o) => o.cache?.key));
+  check('first turn: one item, nothing to compare with', first.items === 1 && first.sinceMs === null && first.extends === null && first.prevItems === null, first);
+  check('second turn extends the first: 3 items over 1, same seat, same prefix, a gap in ms',
+    second.items === 3 && second.prevItems === 1 && second.extends === true && second.divergedAt === null
+    && second.seatChanged === false && second.prefixChanged === false && typeof second.sinceMs === 'number', second);
+  check('a rewritten history does not extend: diverged at item 0, counts kept', third.extends === false && third.divergedAt === 0 && third.items === 1 && third.prevItems === 3, third);
+
+  // The derivation always yields a key, so a request without a session id
+  // still traces, under the key hashed from its model, instructions and tools.
+  _resetCacheTraceForTest();
+  const bare = [];
+  await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }] })), CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(TEXT_STREAM, {}), false, (o) => bare.push(o));
+  check('a request with no session id traces under the derived key', bare[0]?.cache?.key?.startsWith('dario-') === true && bare[0].cache.sinceMs === null, bare[0]?.cache);
+
+  // A client's own key can be anything; the trace carries only a digest of
+  // it, while the request itself still goes out with the key as given.
+  _resetCacheTraceForTest();
+  const own = [];
+  const sentOwn = {};
+  for (let i = 0; i < 2; i++) {
+    await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }], prompt_cache_key: 'alice@example.com' })), CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, sentOwn), false, (o) => own.push(o));
+  }
+  check('a client key goes out as given', sentOwn.body.prompt_cache_key === 'alice@example.com');
+  check('the trace carries a digest of a client key, not the key', own.length === 2 && own.every((o) => /^key-[0-9a-f]{16}$/.test(o.cache?.key ?? '') && !JSON.stringify(o.cache).includes('alice')), own.map((o) => o.cache));
+  check('the digest is stable, so the second turn compares with the first', own[1]?.cache?.key === own[0]?.cache?.key && own[1].cache.sinceMs !== null, own[1]?.cache);
+
+  // A client key in the derived key's exact shape is still the client's.
+  _resetCacheTraceForTest();
+  const lookalike = 'dario-' + '0123456789abcdef'.repeat(2);
+  const mimic = [];
+  await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }], prompt_cache_key: lookalike })), CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, {}), false, (o) => mimic.push(o));
+  check('a client key shaped like a derived one is traced only as a digest', /^key-[0-9a-f]{16}$/.test(mimic[0]?.cache?.key ?? '') && !JSON.stringify(mimic[0].cache).includes(lookalike), mimic[0]?.cache);
+}
+
+header('forwardResponsesToCodex: the outcome carries the cache trace');
+{
+  _resetCacheTraceForTest();
+  const msg = (role, text) => ({ type: 'message', role, content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] });
+  const base = { model: 'gpt-5.6-sol', instructions: 'You are Codex.', stream: true, store: false, prompt_cache_key: 'codex-session-42' };
+  const turns = [
+    { ...base, input: [msg('user', 'brief')] },
+    { ...base, input: [msg('user', 'brief'), msg('assistant', 'ok'), msg('user', 'next')] },
+    { ...base, input: [msg('user', 'a different brief')] },
+  ];
+  const outcomes = [];
+  const sent = {};
+  for (const body of turns) {
+    await forwardResponsesToCodex(fakeRes(), body, CREDS, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, sent), (o) => outcomes.push(o));
+  }
+  const [first, second, third] = outcomes.map((o) => o.cache);
+  check('the key goes out as the client sent it', sent.body.prompt_cache_key === 'codex-session-42');
+  check('every outcome carries a trace under a digest of the client key',
+    outcomes.length === 3 && outcomes.every((o) => /^key-[0-9a-f]{16}$/.test(o.cache?.key ?? '') && o.cache.key === outcomes[0].cache.key && !JSON.stringify(o.cache).includes('codex-session')),
+    outcomes.map((o) => o.cache));
+  check('first raw turn: one item, nothing to compare with', first?.items === 1 && first.sinceMs === null && first.extends === null, first);
+  check('second raw turn extends the first: 3 items over 1, same seat and prefix',
+    second?.items === 3 && second.prevItems === 1 && second.extends === true && second.divergedAt === null
+    && second.seatChanged === false && second.prefixChanged === false && typeof second.sinceMs === 'number', second);
+  check('a rewritten raw history diverges at item 0', third?.extends === false && third.divergedAt === 0 && third.prevItems === 3, third);
+
+  const bare = [];
+  await forwardResponsesToCodex(fakeRes(), { model: 'gpt-5.6-sol', stream: true, input: [msg('user', 'hi')] }, CREDS, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, {}), (o) => bare.push(o));
+  check('a raw request with no key of its own carries no trace', bare.length === 1 && bare[0].cache === undefined, bare[0]?.cache);
+
+  // A bare string input is one item: repeated it extends nothing, changed it
+  // diverges at item 0.
+  _resetCacheTraceForTest();
+  const strings = [];
+  for (const input of ['hello', 'hello', 'goodbye']) {
+    await forwardResponsesToCodex(fakeRes(), { ...base, prompt_cache_key: 'string-conv', input }, CREDS, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, {}), (o) => strings.push(o));
+  }
+  const [s1, s2, s3] = strings.map((o) => o.cache);
+  check('a string input counts as one item', s1?.items === 1 && s1.sinceMs === null, s1);
+  check('the same string again: one item over one, no divergence', s2?.items === 1 && s2.prevItems === 1 && s2.extends === false && s2.divergedAt === null, s2);
+  check('a changed string diverges at item 0', s3?.items === 1 && s3.prevItems === 1 && s3.extends === false && s3.divergedAt === 0, s3);
+
+  const lookalike = 'dario-' + '0123456789abcdef'.repeat(2);
+  const mimic = [];
+  await forwardResponsesToCodex(fakeRes(), { ...base, prompt_cache_key: lookalike, input: [msg('user', 'hi')] }, CREDS, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, {}), (o) => mimic.push(o));
+  check('a raw client key shaped like a derived one is traced only as a digest', /^key-[0-9a-f]{16}$/.test(mimic[0]?.cache?.key ?? '') && !JSON.stringify(mimic[0].cache).includes(lookalike), mimic[0]?.cache);
+}
+
+header('cache trace: a declined seat is not the retry\'s previous request');
+{
+  // A 429 on seat A deferred to seat B is one request, not two turns: the
+  // trace B serves must read as a first request, and the next turn compares
+  // with B's.
+  const SEAT_A = { ...CREDS, alias: 'seat-a' };
+  const SEAT_B = { ...CREDS, alias: 'seat-b' };
+  const limited = async () => ({ ok: false, status: 429, headers: { get: () => null }, text: async () => 'rate limited' });
+
+  _resetCacheTraceForTest();
+  const turn1 = Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'brief' }], prompt_cache_key: 'retry-conv' }));
+  const turn2 = Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'brief' }, { role: 'assistant', content: 'ok' }, { role: 'user', content: 'next' }], prompt_cache_key: 'retry-conv' }));
+  const outcomes = [];
+  const declined = await forwardToCodex({}, fakeRes(), turn1, SEAT_A, '*', {}, 5000, false, 'openai', limited, true, (o) => outcomes.push(o));
+  await forwardToCodex({}, fakeRes(), turn1, SEAT_B, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, {}), true, (o) => outcomes.push(o));
+  await forwardToCodex({}, fakeRes(), turn2, SEAT_B, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, {}), true, (o) => outcomes.push(o));
+  const [retried, next] = outcomes.map((o) => o.cache);
+  check('the declined attempt reports nothing', declined === false && outcomes.length === 2, outcomes.length);
+  check('the retry on another seat is still a first request', retried?.items === 1 && retried.sinceMs === null && retried.prevItems === null && retried.extends === null && retried.seatChanged === null, retried);
+  check('the next turn compares with the seat that served the first', next?.prevItems === 1 && next.extends === true && next.seatChanged === false, next);
+
+  _resetCacheTraceForTest();
+  const msg = (role, text) => ({ type: 'message', role, content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] });
+  const raw = { model: 'gpt-5.6-sol', stream: true, prompt_cache_key: 'raw-retry', input: [msg('user', 'brief')] };
+  const rawOutcomes = [];
+  const rawDeclined = await forwardResponsesToCodex(fakeRes(), raw, SEAT_A, '*', {}, 5000, false, limited, (o) => rawOutcomes.push(o), undefined, true);
+  await forwardResponsesToCodex(fakeRes(), raw, SEAT_B, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, {}), (o) => rawOutcomes.push(o), undefined, true);
+  await forwardResponsesToCodex(fakeRes(), { ...raw, input: [msg('user', 'brief'), msg('assistant', 'ok'), msg('user', 'next')] }, SEAT_B, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, {}), (o) => rawOutcomes.push(o), undefined, true);
+  const [rawRetried, rawNext] = rawOutcomes.map((o) => o.cache);
+  check('raw: the declined attempt reports nothing', rawDeclined === false && rawOutcomes.length === 2, rawOutcomes.length);
+  check('raw: the retry on another seat is still a first request', rawRetried?.items === 1 && rawRetried.sinceMs === null && rawRetried.extends === null && rawRetried.seatChanged === null, rawRetried);
+  check('raw: the next turn compares with the seat that served the first', rawNext?.prevItems === 1 && rawNext.extends === true && rawNext.seatChanged === false, rawNext);
 }
 
 

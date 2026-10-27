@@ -46,6 +46,7 @@ import { parseRetryAfterMs } from './provider-cooldown.js';
 import type { MidstreamGuard } from './midstream.js';
 import { upstreamDeadline } from './upstream-deadline.js';
 import { noteCodexUsageHeaders, parseCodexUsageEndpoint, recordCodexUsage, codexUsageFor } from './codex-usage.js';
+import { CacheTrace, itemHash, prefixHash, traceKey, type CacheTraceInput, type CacheTraceResult } from './cache-trace.js';
 
 export const CODEX_BACKEND_BASE_URL =
   process.env.DARIO_CODEX_BASE_URL || 'https://chatgpt.com/backend-api/codex';
@@ -197,6 +198,31 @@ export interface CodexForwardOutcome {
   stream: boolean;
   model: string;
   alias: string;
+  /** What the request shared with the previous one on its cache key (src/cache-trace.ts). Absent when no key went out. */
+  cache?: CodexCacheTrace;
+}
+
+/** The cache trace of one request, with the key it went out under (`traceKey()`: a caller's own key only as a digest). */
+export interface CodexCacheTrace extends CacheTraceResult {
+  key: string;
+}
+
+// One trace per process: the comparison is between consecutive requests on a
+// key, whichever seat or client path they came through.
+let cacheTrace = new CacheTrace();
+
+export function _resetCacheTraceForTest(): void {
+  cacheTrace = new CacheTrace();
+}
+
+/**
+ * Make a request the one the next request on its key compares with. Called
+ * once a seat has accepted it: a declined attempt retried on a peer is the
+ * same request, and must not become its own predecessor.
+ */
+function rememberTrace(traced: CacheTraceInput | undefined): void {
+  if (!traced) return;
+  try { cacheTrace.remember(traced); } catch { /* the trace is a reading, not a step of the request */ }
 }
 
 /** Why a forward DECLINED, for the caller's cool-down bookkeeping. `status` is
@@ -1059,12 +1085,14 @@ export async function forwardResponsesToCodex(
   });
   const model = String(body.model ?? '');
   let reported = false;
+  let cache: CodexCacheTrace | undefined;
+  let traced: CacheTraceInput | undefined;
   const report = (status: number, usage: CodexTokenUsage | null): void => {
     if (reported || !onDone) return;
     reported = true;
     try {
       onDone({ status, latencyMs: Date.now() - startedAt, upstreamTtfbMs: ttfbMs(), upstreamMs: upstreamMsNow(), inputTokens: usage?.input ?? 0, outputTokens: usage?.output ?? 0,
-        cacheReadTokens: usage?.cacheRead ?? 0, cacheCreateTokens: usage?.cacheCreate ?? 0, stream: true, model, alias: creds.alias });
+        cacheReadTokens: usage?.cacheRead ?? 0, cacheCreateTokens: usage?.cacheCreate ?? 0, stream: true, model, alias: creds.alias, cache });
     } catch { /* never break a served request */ }
   };
   if (body.stream !== true) {
@@ -1078,6 +1106,19 @@ export async function forwardResponsesToCodex(
   // default to make its next turn's previous_response_id resolvable, and
   // Codex CLI sends false itself.
   const upstreamBody = { ...body, stream: true };
+  // The same trace as forwardToCodex, under the key the client sent (Codex CLI
+  // sends its session id on every request); none when it sent no key.
+  // Compared here, remembered only once the seat accepts the request.
+  try {
+    const key = typeof body.prompt_cache_key === 'string' ? body.prompt_cache_key : '';
+    if (key) {
+      // The Responses API also takes a bare string input: one item, so a
+      // changed string diverges like a changed message would.
+      const input = Array.isArray(body.input) ? (body.input as unknown[]) : typeof body.input === 'string' ? [body.input] : [];
+      traced = { key, alias: creds.alias, prefix: prefixHash(body), items: input.map(itemHash), at: Date.now() };
+      cache = { key: traceKey(key, false), ...cacheTrace.peek(traced) };
+    }
+  } catch { /* the trace is a reading, not a step of the request */ }
   const target = `${CODEX_BACKEND_BASE_URL.replace(/\/$/, '')}/responses`;
   const abort = new AbortController();
   let clientGone = false;
@@ -1127,6 +1168,7 @@ export async function forwardResponsesToCodex(
       report(clientGone ? 499 : upstream.status, null);
       return true;
     }
+    rememberTrace(traced);
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'Access-Control-Allow-Origin': corsOrigin, ...securityHeaders, ...splitHeaders() });
     timeout.streaming();
     const reader = upstream.body.getReader();
@@ -1273,6 +1315,8 @@ export async function forwardToCodex(
     fetchStartedAt: fetchStartedAt || Date.now(), upstreamTtfbMs: ttfbMs(),
   });
   let reported = false;
+  let cache: CodexCacheTrace | undefined;
+  let traced: CacheTraceInput | undefined;
   const report = (status: number, usage: CodexTokenUsage | null, stream: boolean, model: string): void => {
     if (reported || !onDone) return;
     reported = true;
@@ -1281,7 +1325,7 @@ export async function forwardToCodex(
         status, latencyMs: Date.now() - startedAt, upstreamTtfbMs: ttfbMs(), upstreamMs: upstreamMsNow(),
         inputTokens: usage?.input ?? 0, outputTokens: usage?.output ?? 0,
         cacheReadTokens: usage?.cacheRead ?? 0, cacheCreateTokens: usage?.cacheCreate ?? 0,
-        stream, model, alias: creds.alias,
+        stream, model, alias: creds.alias, cache,
       });
     }
     catch { /* a reporting failure must never break a served request */ }
@@ -1313,10 +1357,26 @@ export async function forwardToCodex(
   const upstreamBody = isAnthropic
     ? { ...anthropicToResponsesRequest(parsed as unknown as AnthropicRequest, model, effort ? { effort } : {}), stream: true }
     : chatCompletionsToResponses(parsed);
+  const ownCacheKey = (upstreamBody as Record<string, unknown>).prompt_cache_key;
   const scrubbed = toCodexSupportedBody({
     ...(upstreamBody as Record<string, unknown>),
     prompt_cache_key: codexPromptCacheKey(shape, parsed, upstreamBody as Record<string, unknown>),
   });
+  // What this request shares with the previous one on its key, for the
+  // analytics row and the log line (src/cache-trace.ts). Hashes only, and a
+  // failure here never costs the request. Compared here, remembered only once
+  // the seat accepts the request.
+  try {
+    const key = String(scrubbed.prompt_cache_key ?? '');
+    if (key) {
+      const input = Array.isArray(scrubbed.input) ? (scrubbed.input as unknown[]) : [];
+      // Kept as is only when dario derived it; a client's own key is digested
+      // whatever it looks like.
+      const derived = !(typeof ownCacheKey === 'string' && ownCacheKey.length > 0);
+      traced = { key, alias: creds.alias, prefix: prefixHash(scrubbed), items: input.map(itemHash), at: Date.now() };
+      cache = { key: traceKey(key, derived), ...cacheTrace.peek(traced) };
+    }
+  } catch { /* the trace is a reading, not a step of the request */ }
   const target = `${CODEX_BACKEND_BASE_URL.replace(/\/$/, '')}/responses`;
 
   const abort = new AbortController();
@@ -1424,6 +1484,7 @@ export async function forwardToCodex(
       report(upstream.status, null, clientWantsStream, model);
       return true;
     }
+    rememberTrace(traced);
 
     // OpenAI shape: one stateful line-in/line-out translator (unchanged).
     // Anthropic shape: parse the typed Responses event stream, then map events
