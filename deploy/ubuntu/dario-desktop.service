@@ -1,0 +1,16 @@
+[Unit]
+Description=Private remote desktop for Dario profile authentication
+After=network.target
+
+[Service]
+User=dario
+Group=dario
+Environment=HOME=/var/lib/dario
+ExecStart=/opt/dario/deploy/ubuntu/desktop.sh
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

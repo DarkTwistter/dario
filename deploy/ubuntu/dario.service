@@ -1,0 +1,24 @@
+[Unit]
+Description=Dario with account proxy profiles
+After=network-online.target dario-desktop.service
+Wants=network-online.target
+Requires=dario-desktop.service
+
+[Service]
+User=dario
+Group=dario
+WorkingDirectory=/opt/dario
+EnvironmentFile=/etc/dario/dario.env
+Environment=DISPLAY=:99
+Environment=HOME=/var/lib/dario
+ExecStart=/var/lib/dario/.bun/bin/bun /opt/dario/dist/cli.js proxy --no-live-capture
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+KillMode=control-group
+UMask=0077
+# Do not set RestrictNamespaces/PrivateUsers: Chrome's network launcher creates user/net namespaces.
+# Add a systemd IPAddressDeny/IPAddressAllow drop-in for your proxy IPs; see ubuntu-server.md.
+
+[Install]
+WantedBy=multi-user.target

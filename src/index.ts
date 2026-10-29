@@ -27,6 +27,8 @@ export {
   getAccountsDir,
 } from './accounts.js';
 export type { AccountCredentials } from './accounts.js';
+export { accountFetch, AccountProxyError, loadNetworkProfile, saveNetworkProfile, listNetworkProfiles, publicNetworkProfile } from './account-profiles.js';
+export type { AccountNetworkProfile } from './account-profiles.js';
 export { Analytics } from './analytics.js';
 export type { RequestRecord, AnalyticsSummary } from './analytics.js';
 

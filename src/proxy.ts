@@ -18,6 +18,7 @@ import { foldTiming, timingHeaders, timingLogFields, type RequestTiming } from '
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, activeParkedBuckets, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, parsePoolHeadroomFloor, describePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail } from './pool.js';
 import { backfillIdentity } from './accounts.js';
+import { accountFetch, AccountProxyError } from './account-profiles.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM, CREDITS_CLAIM } from './analytics.js';
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
@@ -2222,6 +2223,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   } else {
     for (const acc of accountsList) {
       pool.add(acc.alias, {
+        networkProfile: acc.networkProfile,
         accessToken: acc.accessToken,
         refreshToken: acc.refreshToken,
         expiresAt: acc.expiresAt,
@@ -2264,6 +2266,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             const identified = await backfillIdentity(refreshed, fetch).catch(() => null);
             if (identified?.accountId) {
               pool.add(acc.alias, {
+                networkProfile: identified.networkProfile,
                 accessToken: identified.accessToken, refreshToken: identified.refreshToken, expiresAt: identified.expiresAt,
                 deviceId: identified.deviceId, accountUuid: identified.accountUuid, grantedAt: identified.grantedAt,
                 organizationId: identified.organizationId, accountId: identified.accountId, accountEmail: identified.accountEmail,
@@ -2327,6 +2330,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             const identified = await backfillIdentity(refreshed, fetch).catch(() => null);
             if (identified?.accountId) {
               pool.add(acc.alias, {
+                networkProfile: identified.networkProfile,
                 accessToken: identified.accessToken, refreshToken: identified.refreshToken, expiresAt: identified.expiresAt,
                 deviceId: identified.deviceId, accountUuid: identified.accountUuid, grantedAt: identified.grantedAt,
                 organizationId: identified.organizationId, accountId: identified.accountId, accountEmail: identified.accountEmail,
@@ -2372,6 +2376,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       const acc = await loadAccount(recovered);
       if (acc) {
         pool.add(acc.alias, {
+          networkProfile: acc.networkProfile,
           accessToken: acc.accessToken,
           refreshToken: acc.refreshToken,
           expiresAt: acc.expiresAt,
@@ -2813,6 +2818,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // first client call is answered from cache; every failure path inside
   // getModelCatalog falls back to the baked list, so the route always 200s.
   const catalogDeps: CatalogDeps = {
+    fetchImpl: (input, init) => {
+      const token = new Headers(init?.headers).get('authorization')?.replace(/^Bearer /i, '');
+      const account = pool.all().find((a) => a.accessToken === token);
+      if (token && !account && (process.env.DARIO_REQUIRE_ACCOUNT_PROXY === '1' || pool.all().some(a => a.networkProfile))) {
+        throw new AccountProxyError('catalog', 'no account policy for bearer token');
+      }
+      return account ? accountFetch(account, upstreamFetch)(input, init) : upstreamFetch(input, init);
+    },
     upstreamApiKey: upstreamApiKey || undefined,
     getToken: async () => {
       const now = Date.now();
@@ -3282,7 +3295,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       });
       const probe = wantsProbe
         ? await getServingProbe({
-            fetchImpl: upstreamFetch,
+            fetchImpl: catalogDeps.fetchImpl,
             getToken: catalogDeps.getToken,
             upstreamApiKey: upstreamApiKey || undefined,
           })
@@ -5911,7 +5924,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // Skipped on the credits rung too: a plain API request has no CC order.
         const outboundHeaders = (passthrough || creditsRung) ? headers : orderHeadersForOutbound(headers);
         fetchStartedAt ??= Date.now();
-        upstream = await upstreamFetch(targetBase, {
+        upstream = await (poolAccount ? accountFetch(poolAccount, upstreamFetch) : upstreamFetch)(targetBase, {
           method: req.method ?? 'POST',
           headers: outboundHeaders,
           body: finalBody ? new Uint8Array(finalBody) : undefined,
@@ -6831,6 +6844,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           res.end();
         }
         writeLogLine(logFileStream, { ...errLogBase, status: 504, error: 'upstream-timeout' });
+      } else if (err instanceof AccountProxyError) {
+        if (!res.headersSent) {
+          res.writeHead(503, JSON_HEADERS);
+          res.end(JSON.stringify({ error: { type: err.code, message: err.message } }));
+        } else if (!res.writableEnded) res.end();
+        writeLogLine(logFileStream, { ...errLogBase, status: 503, error: err.code });
       } else {
         // Log full error server-side, return generic message to client
         console.error('[dario] Proxy error:', sanitizeError(err));
@@ -6960,7 +6979,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Skipped entirely under --no-live-capture / DARIO_NO_LIVE_CAPTURE=1 —
   // the operator has opted into a bundled-only shape (air-gapped runs,
   // reproducible-build CI, deliberate pinning). dario#77.
-  if (!opts.noLiveCapture) {
+  if (!opts.noLiveCapture && !pool.all().some((a) => a.networkProfile) && process.env.DARIO_REQUIRE_ACCOUNT_PROXY !== '1') {
     void import('./live-fingerprint.js').then(({ refreshLiveFingerprintAsync }) =>
       refreshLiveFingerprintAsync({ silent: false, force: drift.drifted }).catch(() => { /* noop */ }),
     );
@@ -7071,10 +7090,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // same lineage and trip Anthropic's refresh-token reuse-detection (the
       // 2026-06-23 fleet outage, dario#641-audit). Empty in api-key mode (no
       // pool account); presence is an OAuth-session concept and is skipped there.
-      const token = pool.all()[0]?.accessToken ?? '';
+      const presenceAccount = pool.all()[0];
+      const token = presenceAccount?.accessToken ?? '';
       if (!token) return;
       const presenceUrl = `${ANTHROPIC_API}/v1/code/sessions/${SESSION_ID}/client/presence`;
-      await upstreamFetch(presenceUrl, {
+      await accountFetch(presenceAccount, upstreamFetch)(presenceUrl, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,

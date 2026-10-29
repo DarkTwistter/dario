@@ -149,7 +149,8 @@ export function installOutboundProxyWrapper(config: OutboundProxyConfig): void {
     }
     // Use a typed cast — Bun's fetch options include `proxy`, but TS's
     // standard fetch types don't.
-    const bunInit = { ...(init || {}), proxy: config.url } as Parameters<typeof fetch>[1];
+    // An explicit per-account policy takes precedence over the process default.
+    const bunInit = { proxy: config.url, ...(init || {}) } as Parameters<typeof fetch>[1];
     return originalFetch(input as Parameters<typeof fetch>[0], bunInit);
   }) as typeof fetch;
   globalThis.fetch = wrapped;

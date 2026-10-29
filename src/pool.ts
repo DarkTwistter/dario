@@ -6,6 +6,7 @@
  * no accounts/ entries) keeps the same code path it has always had.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { requireNetworkProfile } from './account-profiles.js';
 
 /**
  * Compute a stable stickiness key from a conversation's first user
@@ -277,6 +278,7 @@ export function distinctAccounts(accounts: readonly PoolAccount[]): number {
 
 export interface PoolAccount {
   alias: string;
+  networkProfile?: string;
   accessToken: string;
   refreshToken: string;
   expiresAt: number;
@@ -370,7 +372,7 @@ export function isInAuthCooldown(account: PoolAccount, now: number = Date.now())
 export const TOKEN_EXPIRY_MARGIN_MS = 30_000;
 
 /** Why the router cannot serve a request from an account. */
-export type AccountIneligibility = 'rate-limited' | 'token-expired' | 'auth-cooldown';
+export type AccountIneligibility = 'rate-limited' | 'token-expired' | 'auth-cooldown' | 'proxy-unavailable';
 
 /**
  * The single answer to "can the router serve a request from this account, and
@@ -430,6 +432,7 @@ export function rateLimitWindowPassed(rl: RateLimitSnapshot, now: number = Date.
  * exactly the state this is: no current observation.
  */
 export function reportedAccountStatus(account: PoolAccount, now: number = Date.now()): string {
+  if (accountProxyUnavailable(account)) return 'proxy-unavailable';
   if (isInAuthCooldown(account, now)) return 'auth-cooldown';
   if (account.rateLimit.status === 'rejected' && rateLimitWindowPassed(account.rateLimit, now)) return 'unknown';
   // A bucket-scoped rejection is one family's verdict; the seat is serving the
@@ -443,6 +446,7 @@ export function accountIneligibility(
   now: number = Date.now(),
   family?: string | null,
 ): AccountIneligibility | null {
+  if (accountProxyUnavailable(account)) return 'proxy-unavailable';
   // A rejection outlives its own window unless it is allowed to expire:
   // nothing refreshes a parked account's snapshot, because being parked is
   // what stops it being sent requests. A rejection scoped to per-model
@@ -459,6 +463,18 @@ export function accountIneligibility(
   if (account.expiresAt <= now + TOKEN_EXPIRY_MARGIN_MS) return 'token-expired';
   if (isInAuthCooldown(account, now)) return 'auth-cooldown';
   return null;
+}
+
+function accountProxyUnavailable(account: PoolAccount): boolean {
+  // Legacy pool entries stay independent of the operator's filesystem.
+  // Profile creation binds the policy into credentials before the pool reloads.
+  if (!account.networkProfile && process.env.DARIO_REQUIRE_ACCOUNT_PROXY !== '1') return false;
+  try {
+    const id = account.networkProfile ?? account.alias;
+    requireNetworkProfile(id);
+    account.networkProfile ??= id;
+    return false;
+  } catch { return true; }
 }
 
 /** Boolean form of `accountIneligibility` — the router's eligibility filter. */
@@ -566,7 +582,8 @@ export function isCoolingAfterRejection(account: PoolAccount, now: number = Date
  * separately.
  */
 export function isProbeable(account: PoolAccount, now: number = Date.now(), family?: string | null): boolean {
-  return !isInAuthCooldown(account, now)
+  return !accountProxyUnavailable(account)
+    && !isInAuthCooldown(account, now)
     && !isParkedInLiveWindow(account, now, family)
     && !isCoolingAfterRejection(account, now);
 }
@@ -1260,6 +1277,7 @@ export class AccountPool {
   }
 
   add(alias: string, opts: {
+    networkProfile?: string;
     accessToken: string;
     refreshToken: string;
     expiresAt: number;
@@ -1288,6 +1306,7 @@ export class AccountPool {
     const keep = regranted ? undefined : existing;
     this.accounts.set(alias, {
       alias,
+      networkProfile: opts.networkProfile ?? keep?.networkProfile,
       accessToken: opts.accessToken,
       refreshToken: opts.refreshToken,
       expiresAt: opts.expiresAt,
@@ -1839,6 +1858,7 @@ export class AccountPool {
  *  accounts.ts' AccountCredentials, declared here to keep pool.ts dependency-free. */
 export interface ReconcilableAccount {
   alias: string;
+  networkProfile?: string;
   accessToken: string;
   refreshToken: string;
   expiresAt: number;
@@ -1864,6 +1884,7 @@ export function reconcilePoolAccounts(pool: AccountPool, accounts: ReconcilableA
   const wanted = new Set(accounts.map(a => a.alias));
   for (const a of accounts) {
     pool.add(a.alias, {
+      networkProfile: a.networkProfile,
       accessToken: a.accessToken,
       refreshToken: a.refreshToken,
       expiresAt: a.expiresAt,

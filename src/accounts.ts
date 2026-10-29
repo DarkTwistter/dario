@@ -27,6 +27,8 @@ import { loadCredentials, saveCredentialsTokens, buildManualAuthorizeUrl, parseM
 import { openBrowser } from './open-browser.js';
 import { redactSecrets } from './redact.js';
 import { durableWriteFile } from './durable-write.js';
+import { accountFetch, loadNetworkProfile, requireNetworkProfile } from './account-profiles.js';
+import { openProfileBrowser, findProfileBrowser } from './profile-browser.js';
 
 const MANUAL_REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback';
 
@@ -50,6 +52,8 @@ function safeAliasPath(alias: string): string | null {
 
 export interface AccountCredentials {
   alias: string;
+  /** Required network policy; losing the profile must never enable direct access. */
+  networkProfile?: string;
   accessToken: string;
   refreshToken: string;
   expiresAt: number;
@@ -121,6 +125,9 @@ export async function loadAllAccounts(): Promise<AccountCredentials[]> {
 export async function saveAccount(creds: AccountCredentials): Promise<void> {
   const path = safeAliasPath(creds.alias);
   if (!path) throw new Error(`invalid account alias: ${creds.alias}`);
+  const previous = await loadAccount(creds.alias);
+  const policy = creds.networkProfile ?? previous?.networkProfile ?? (loadNetworkProfile(creds.alias) ? creds.alias : undefined);
+  if (policy) creds = { ...creds, networkProfile: policy };
   await ensureDir();
   // Durable write (dario#790): fsync the temp file + parent dir so a rotated
   // refresh token survives an abrupt container recreate. A plain rename left
@@ -373,11 +380,11 @@ interface LockAcquireResult {
   lockId?: string;
 }
 
-async function lockCall<T>(path: string, body: unknown, env = process.env): Promise<T | null> {
+async function lockCall<T>(path: string, body: unknown, env = process.env, fetchImpl: typeof fetch = fetch): Promise<T | null> {
   const base = refreshLockUrl(env);
   if (!base) return null;
   try {
-    const res = await fetch(`${base}${path}`, {
+    const res = await fetchImpl(`${base}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', authorization: `Bearer ${refreshLockToken(env)}` },
       body: JSON.stringify(body),
@@ -400,7 +407,7 @@ async function doRefreshAccountTokenDistributed(creds: AccountCredentials): Prom
       holder,
       ttlMs: 20_000,
       currentExpiresAt: creds.expiresAt,
-    });
+    }, process.env, accountFetch(creds));
 
     if (res === null) {
       // Lock service unreachable — fail open, refresh directly exactly as
@@ -408,6 +415,7 @@ async function doRefreshAccountTokenDistributed(creds: AccountCredentials): Prom
       return doRefreshAccountToken(creds);
     }
     if (res.credentials) {
+      if (creds.networkProfile) res.credentials.networkProfile = creds.networkProfile;
       // Another instance already refreshed more recently than what we're
       // holding — adopt it, no Anthropic call needed at all.
       await saveAccount(res.credentials);
@@ -420,13 +428,13 @@ async function doRefreshAccountTokenDistributed(creds: AccountCredentials): Prom
       const { lockId } = res;
       try {
         const updated = await doRefreshAccountToken(creds);
-        await lockCall(`/lock/${encodeURIComponent(creds.alias)}/release`, { holder, lockId, credentials: updated });
+        await lockCall(`/lock/${encodeURIComponent(creds.alias)}/release`, { holder, lockId, credentials: updated }, process.env, accountFetch(creds));
         return updated;
       } catch (err) {
         // Release WITHOUT credentials on failure — do not cache a
         // non-refresh as if it were a fresh one; the next acquirer must
         // attempt a real refresh, not adopt our failure.
-        await lockCall(`/lock/${encodeURIComponent(creds.alias)}/release`, { holder, lockId });
+        await lockCall(`/lock/${encodeURIComponent(creds.alias)}/release`, { holder, lockId }, process.env, accountFetch(creds));
         throw err;
       }
     }
@@ -442,7 +450,7 @@ async function doRefreshAccountTokenDistributed(creds: AccountCredentials): Prom
 
 async function doRefreshAccountToken(creds: AccountCredentials): Promise<AccountCredentials> {
   const cfg = await detectCCOAuthConfig();
-  const res = await fetch(cfg.tokenUrl, {
+  const res = await accountFetch(creds)(cfg.tokenUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -486,7 +494,7 @@ async function doRefreshAccountToken(creds: AccountCredentials): Promise<Account
  */
 export async function backfillIdentity(creds: AccountCredentials, fetchImpl: typeof fetch = fetch): Promise<AccountCredentials> {
   if (creds.accountId) return creds;
-  const profile = await fetchOAuthProfile(creds.accessToken, fetchImpl);
+  const profile = await fetchOAuthProfile(creds.accessToken, accountFetch(creds, fetchImpl));
   if (!profile) return creds;
   const updated: AccountCredentials = { ...creds, ...profileFields(profile) };
   await saveAccount(updated);
@@ -521,7 +529,19 @@ function generatePKCE(): { codeVerifier: string; codeChallenge: string } {
  * Saves to `~/.dario/accounts/<alias>.json` on success.
  */
 export async function addAccountViaOAuth(alias: string): Promise<AccountCredentials> {
+  if (!safeAliasPath(alias)) throw new Error('Invalid account alias');
+  const stored = await loadAccount(alias);
+  if (stored?.networkProfile) requireNetworkProfile(stored.networkProfile);
+  const network = loadNetworkProfile(alias);
+  if (network) { requireNetworkProfile(alias); findProfileBrowser(); }
+  if (!network && process.env.DARIO_REQUIRE_ACCOUNT_PROXY === '1') requireNetworkProfile(alias);
+  const binding = { alias, ...(network ? { networkProfile: alias } : {}) };
+  const profileFetch = accountFetch(binding);
   const cfg = await detectCCOAuthConfig();
+  if (network) {
+    const check = await profileFetch(cfg.authorizeUrl, { redirect: 'manual', signal: AbortSignal.timeout(15_000) });
+    await check.body?.cancel();
+  }
   const { codeVerifier, codeChallenge } = generatePKCE();
   // 32 random bytes → 43-char base64url state. Matches what CC v2.1.116+
   // ships in `/login` URLs; Anthropic's `/oauth/authorize` endpoint started
@@ -534,6 +554,12 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
 
   return new Promise<AccountCredentials>((resolve, reject) => {
     let port = 0;
+    let browser: { close(): void } | undefined;
+    let finished = false;
+    const timeout = setTimeout(() => fail(new Error('OAuth flow timed out after 5 minutes.')), 300_000);
+    timeout.unref();
+    const cleanup = () => { finished = true; clearTimeout(timeout); server.close(); browser?.close(); };
+    const fail = (err: Error) => { cleanup(); reject(err); };
     const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
       try {
         const url = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
@@ -549,16 +575,14 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
         if (!code) {
           res.writeHead(400);
           res.end('No authorization code received');
-          server.close();
-          reject(new Error('No authorization code received'));
+          fail(new Error('No authorization code received'));
           return;
         }
 
         if (returnedState !== state) {
           res.writeHead(400);
           res.end('Invalid state parameter');
-          server.close();
-          reject(new Error('OAuth state mismatch — possible CSRF'));
+          fail(new Error('OAuth state mismatch — possible CSRF'));
           return;
         }
 
@@ -569,7 +593,7 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
         server.close();
 
         // Exchange code for tokens
-        const tokenRes = await fetch(cfg.tokenUrl, {
+        const tokenRes = await profileFetch(cfg.tokenUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -597,12 +621,15 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
 
         // Who this token is (one GET, never fatal), then which client identity
         // the alias presents — see chooseClientIdentity.
-        const profile = await fetchOAuthProfile(tokens.access_token);
+        const profile = await fetchOAuthProfile(tokens.access_token, profileFetch);
+        if (network?.email && profile?.accountEmail && network.email.toLowerCase() !== profile.accountEmail.toLowerCase()) {
+          throw new Error('The signed-in account does not match the profile email. Sign in with the configured account.');
+        }
         const others = (await loadAllAccounts()).filter((a) => a.alias !== alias);
         const identity = await chooseClientIdentity(others, profile);
 
         const creds: AccountCredentials = {
-          alias,
+          ...binding,
           accessToken: tokens.access_token,
           refreshToken: tokens.refresh_token,
           expiresAt: Date.now() + tokens.expires_in * 1000,
@@ -615,10 +642,10 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
         };
 
         await saveGrantedAccount(creds);
+        cleanup();
         resolve(creds);
       } catch (err) {
-        server.close();
-        reject(err instanceof Error ? err : new Error(String(err)));
+        fail(err instanceof Error ? err : new Error(String(err)));
       }
     });
 
@@ -640,22 +667,25 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
       const authUrl = `${cfg.authorizeUrl}?${params.toString()}`;
 
       console.log(`  Opening browser to add account "${alias}"...`);
-      console.log(`  If the browser didn't open, visit:`);
-      console.log(`  ${authUrl}`);
+      if (!network) {
+        console.log(`  If the browser didn't open, visit:`);
+        console.log(`  ${authUrl}`);
+      } else console.log('  Complete sign-in in the isolated profile browser.');
       console.log();
 
-      try { openBrowser(authUrl); } catch { /* non-fatal: user has the URL printed above */ }
+      if (network) {
+        void openProfileBrowser(alias, authUrl, `http://localhost:${port}/callback`).then((opened) => {
+          browser = opened;
+          if (finished) opened.close();
+        }).catch((err) => fail(err instanceof Error ? err : new Error('Profile browser failed')));
+      } else {
+        try { openBrowser(authUrl); } catch { /* non-fatal: user has the URL printed above */ }
+      }
     });
 
     server.on('error', (err: Error) => {
-      reject(new Error(`Failed to start OAuth callback server: ${err.message}`));
+      fail(new Error(`Failed to start OAuth callback server: ${err.message}`));
     });
-
-    const timeout = setTimeout(() => {
-      server.close();
-      reject(new Error('OAuth flow timed out after 5 minutes. Try `dario accounts add` again.'));
-    }, 300_000);
-    timeout.unref();
   });
 }
 
@@ -711,6 +741,9 @@ export async function startAddAccount(
   if (!safeAliasPath(alias)) {
     throw new Error(`invalid account alias "${alias}" (allowed: letters, digits, _-. — up to 64 chars, no path separators)`);
   }
+  if (loadNetworkProfile(alias) || process.env.DARIO_REQUIRE_ACCOUNT_PROXY === '1') {
+    throw new Error('Proxy profiles require the isolated browser flow: dario profiles login <alias>');
+  }
   const cfg = await detectCCOAuthConfig();
   const { codeVerifier, codeChallenge } = generatePKCE();
   // 32-byte state — same constraint as the auto flow. See dario#71.
@@ -736,7 +769,9 @@ export async function completeAddAccount(
     throw new Error(`invalid account alias "${alias}"`);
   }
   const cfg = await detectCCOAuthConfig();
-  const tokenRes = await fetch(cfg.tokenUrl, {
+  const existing = await loadAccount(alias);
+  const binding = { alias, networkProfile: existing?.networkProfile ?? (loadNetworkProfile(alias) ? alias : undefined) };
+  const tokenRes = await accountFetch(binding)(cfg.tokenUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -762,12 +797,12 @@ export async function completeAddAccount(
     scope?: string;
   };
 
-  const profile = await fetchOAuthProfile(tokens.access_token);
+  const profile = await fetchOAuthProfile(tokens.access_token, accountFetch(binding));
   const others = (await loadAllAccounts()).filter((a) => a.alias !== alias);
   const identity = await chooseClientIdentity(others, profile);
 
   const creds: AccountCredentials = {
-    alias,
+    ...binding,
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token,
     expiresAt: Date.now() + tokens.expires_in * 1000,
@@ -911,6 +946,8 @@ export async function ensureLoginCredentialsInPool(
   alias: string = MIGRATED_LOGIN_ALIAS,
 ): Promise<string | null> {
   if (!safeAliasPath(alias)) return null;
+  // Strict installations must not import an unrelated local Claude session or probe it directly.
+  if (process.env.DARIO_REQUIRE_ACCOUNT_PROXY === '1') return null;
 
   const existing = await listAccountAliases();
   if (existing.length > 0) return null;
@@ -988,6 +1025,7 @@ export async function resyncLoginFromCredentialsIfStale(): Promise<
 
   const loginAcc = await loadAccount(MIGRATED_LOGIN_ALIAS);
   if (!loginAcc) return 'no-login';
+  if (loginAcc.networkProfile) return 'in-sync';
 
   const creds = await loadCredentials();
   const tok = creds?.claudeAiOauth;
@@ -1063,7 +1101,7 @@ export async function resyncLoginFromCredentialsIfStale(): Promise<
 export async function mirrorLoginToCredentials(
   refreshed: AccountCredentials,
 ): Promise<'skip-not-login' | 'mirrored' | 'creds-newer'> {
-  if (refreshed.alias !== MIGRATED_LOGIN_ALIAS) return 'skip-not-login';
+  if (refreshed.alias !== MIGRATED_LOGIN_ALIAS || refreshed.networkProfile) return 'skip-not-login';
 
   const creds = await loadCredentials();
   const currentExpiry = creds?.claudeAiOauth?.expiresAt ?? 0;

@@ -122,6 +122,7 @@ async function materializeLoginPool(): Promise<void> {
 }
 
 async function login() {
+  if (process.env.DARIO_REQUIRE_ACCOUNT_PROXY === '1') throw new Error('Use dario profiles create <alias> and dario profiles login <alias> in proxy-required mode');
   console.log('');
   console.log('  dario — Claude Login');
   console.log('  ───────────────────');
@@ -3200,6 +3201,7 @@ async function compare(): Promise<void> {
 }
 
 const commands: Record<string, () => Promise<void>> = {
+  profiles: async () => { const { runProfiles } = await import('./profiles-cli.js'); await runProfiles(args); },
   login,
   status,
   proxy,

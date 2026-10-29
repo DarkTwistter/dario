@@ -83,7 +83,10 @@ import {
   removeAccount,
   listAccountAliases,
   loadAccount,
+  saveAccount,
+  addAccountViaOAuth,
 } from './accounts.js';
+import { loadNetworkProfile, saveNetworkProfile, listNetworkProfiles, publicNetworkProfile, requireNetworkProfile, validateProfile } from './account-profiles.js';
 import {
   startAddCodexAccount,
   completeAddCodexAccount,
@@ -212,6 +215,7 @@ export interface AdminCodexAccountRecord extends CodexSeatState {
 
 export interface AdminAuditEvent {
   action: 'login_start' | 'login_complete' | 'account_remove' | 'auth_reject' | 'rate_limited'
+    | 'profile_create' | 'profile_enable' | 'profile_disable'
     | 'key_create' | 'key_revoke' | 'key_rotate' | 'key_budget';
   /** Which engine's credentials the event touched; absent means Claude, the only engine before codex joined (dario#1009). */
   engine?: 'codex';
@@ -540,6 +544,7 @@ export async function handleAdminRequest(
   deps: AdminDeps,
 ): Promise<boolean> {
   const method = req.method ?? 'GET';
+  const profileTarget = /^\/admin\/profiles\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/(login|enable|disable)$/.exec(urlPath);
   const remote = req.socket?.remoteAddress;
   const isAccountDelete =
     method === 'DELETE' && urlPath.startsWith(ACCOUNTS_PREFIX) && urlPath.length > ACCOUNTS_PREFIX.length;
@@ -557,6 +562,7 @@ export async function handleAdminRequest(
   const keyName = keyTarget === null ? null : isKeyRotate ? keyTarget.slice(0, -'/rotate'.length) : isKeyBudget ? keyTarget.slice(0, -'/budget'.length) : keyTarget;
   const isKeyRevoke = keyTarget !== null && !isKeyRotate && !isKeyBudget && method === 'DELETE';
   const known =
+    urlPath === '/admin/profiles' || profileTarget !== null ||
     urlPath === '/admin/login/start' ||
     urlPath === '/admin/login/start-needed' ||
     urlPath === '/admin/login/complete' ||
@@ -597,6 +603,7 @@ export async function handleAdminRequest(
   // blanket pre-parse token here would let a single HTTP request move N
   // accounts' credentials for the price of one throttle token.
   const isMutation = urlPath === '/admin/login/start' || isAccountDelete
+    || (urlPath === '/admin/profiles' && method === 'POST') || profileTarget !== null
     || urlPath === '/admin/codex/login/start' || isCodexAccountDelete
     || (urlPath === '/admin/keys' && method === 'POST') || isKeyRotate || isKeyBudget || isKeyRevoke;
   if (isMutation) {
@@ -608,6 +615,48 @@ export async function handleAdminRequest(
   prunePending(now);
 
   try {
+    if (urlPath === '/admin/profiles') {
+      if (method === 'GET') {
+        send(res, 200, { profiles: (await listNetworkProfiles()).map(publicNetworkProfile) });
+        return true;
+      }
+      if (method !== 'POST') { send(res, 405, { error: 'Use GET or POST' }); return true; }
+      const body = await readJsonBody(req);
+      const alias = typeof body.alias === 'string' ? body.alias : '';
+      // Validate the alias before filesystem access; proxy validation never echoes credentials.
+      const profile = validateProfile({ ...body, version: 1, enabled: true,
+        ...(process.env.DARIO_BROWSER_LAUNCHER ? { browserIsolation: 'external' } : {}) }, alias);
+      if (loadNetworkProfile(alias)) { send(res, 409, { error: 'Profile already exists' }); return true; }
+      await saveNetworkProfile(profile);
+      const account = await loadAccount(alias);
+      if (account) await saveAccount({ ...account, networkProfile: alias });
+      await deps.onAccountsChanged?.();
+      deps.audit?.({ action: 'profile_create', alias, ok: true, status: 201, remote });
+      send(res, 201, publicNetworkProfile(profile));
+      return true;
+    }
+    if (profileTarget) {
+      if (method !== 'POST') { send(res, 405, { error: 'Use POST' }); return true; }
+      const [, alias, operation] = profileTarget;
+      const profile = loadNetworkProfile(alias);
+      if (!profile) { send(res, 404, { error: 'Unknown profile' }); return true; }
+      if (operation === 'login') {
+        // Keep this HTTP call pending while the user completes the separate browser flow.
+        // Other requests continue normally. The callback binds only on loopback.
+        requireNetworkProfile(alias);
+        deps.audit?.({ action: 'login_start', alias, ok: true, status: 200, remote });
+        const creds = await addAccountViaOAuth(alias);
+        await deps.onAccountsChanged?.();
+        deps.audit?.({ action: 'login_complete', alias, ok: true, status: 200, remote });
+        send(res, 200, { alias, status: 'added', expires_at: creds.expiresAt });
+      } else {
+        const enabled = operation === 'enable';
+        await saveNetworkProfile({ ...profile, enabled });
+        deps.audit?.({ action: enabled ? 'profile_enable' : 'profile_disable', alias, ok: true, status: 200, remote });
+        send(res, 200, { alias, enabled });
+      }
+      return true;
+    }
     // POST /admin/login/start  { alias? }
     if (urlPath === '/admin/login/start') {
       if (method !== 'POST') { send(res, 405, { error: 'Method not allowed (use POST)' }); return true; }

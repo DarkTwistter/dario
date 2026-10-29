@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $EUID -eq 0 ]] || { echo 'Run: sudo darioctl ...' >&2; exit 1; }
+set -a
+source /etc/dario/dario.env
+export HOME=/var/lib/dario DISPLAY=:99 USER=dario LOGNAME=dario
+export PATH=/opt/dario-node/bin:/var/lib/dario/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+set +a
+exec runuser --user dario --preserve-environment -- /var/lib/dario/.bun/bin/bun /opt/dario/dist/cli.js "$@"
