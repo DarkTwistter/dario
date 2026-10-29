@@ -1,6 +1,6 @@
 #!/bin/sh
 # Run one Chromium in a fresh, loopback-only network namespace.
-# unshare preserves Chrome DevTools fd 3/4. No root, sudo or --no-sandbox.
+# Native browser launch. Extra fd 3/4 are preserved only for explicit headless self-tests.
 set -eu
 
 : "${DARIO_BROWSER_GATEWAY:?Dario must supply the loopback gateway URL}"
@@ -27,6 +27,7 @@ exec "$unshare_bin" --user --map-current-user --keep-caps --net -- /bin/sh -eu -
   chrome_pid=
   cleanup() {
     test -z "$chrome_pid" || kill "$chrome_pid" 2>/dev/null || true
+    test -z "$chrome_pid" || wait "$chrome_pid" 2>/dev/null || true
     kill "$relay_pid" 2>/dev/null || true
   }
   trap cleanup EXIT

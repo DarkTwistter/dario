@@ -172,82 +172,47 @@ async function launchProfileBrowser(alias: string, authorizeUrl: string, callbac
     '--disable-background-mode',
     '--disable-features=MediaRouter,DnsOverHttps,UseDnsHttpsSvcbAlpn',
     ...(profile.locale ? [`--lang=${profile.locale}`] : []),
-    ...(options.headless ? ['--headless=new', '--use-mock-keychain'] : []),
+    ...(options.headless ? ['--headless=new', '--use-mock-keychain', '--remote-debugging-pipe'] : []),
     ...(options.networkLog ? [`--log-net-log=${options.networkLog}`] : []),
-    '--no-first-run', '--no-default-browser-check', '--remote-debugging-pipe', 'about:blank',
+    '--no-first-run', '--no-default-browser-check', options.headless ? 'about:blank' : authorize.href,
   ];
   // A profile is isolated with user-data-dir, never by replacing macOS HOME (which breaks Keychain).
   const browserEnv = { ...process.env, ...(process.platform === 'darwin' ? { HOME: userInfo().homedir } : {}), ...(profile.timeZone ? { TZ: profile.timeZone } : {}) };
   // Do not nest sandbox-exec around Chrome: macOS rejects Chrome's own seatbelt sandbox.
   // A launcher can enforce a dedicated firewall/namespace while preserving Chrome's sandbox.
+  const stdio: ('ignore' | 'pipe')[] = options.headless ? ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'ignore', 'pipe'];
   const child = launcher
-    ? spawn(launcher, [executable, ...browserArgs], { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], env: { ...browserEnv, DARIO_BROWSER_GATEWAY: gateway.url, DARIO_BROWSER_GATEWAY_SOCKET: gateway.socketPath } })
-    : spawn(executable, browserArgs, { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], env: browserEnv });
+    ? spawn(launcher, [executable, ...browserArgs], { stdio, env: { ...browserEnv, DARIO_BROWSER_GATEWAY: gateway.url, DARIO_BROWSER_GATEWAY_SOCKET: gateway.socketPath } })
+    : spawn(executable, browserArgs, { stdio, env: browserEnv });
   const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
-  // DevTools pipe keeps browser control off the network. Chrome reads fd 3, writes fd 4.
-  const input = child.stdio[3] as NodeJS.WritableStream;
-  const output = child.stdio[4] as NodeJS.ReadableStream;
-  let sequence = 0, buffered = '';
-  const pending = new Map<number, { resolve(value: any): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
-  const send = (method: string, params: object = {}, sessionId?: string): Promise<any> => new Promise((resolve, reject) => {
-    const id = ++sequence;
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error('Profile browser did not respond')); }, 15_000);
-    pending.set(id, { resolve, reject, timer });
-    input.write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + '\0');
-  });
-  let sandboxDiagnostic = '';
-  child.stderr?.on('data', chunk => {
-    options.diagnostics?.(String(chunk));
-    // Only sandbox launch errors are safe to include; browser output may contain OAuth URLs.
-    const diagnostic = String(chunk).split('\n').find(line => line.startsWith('sandbox-exec:'));
-    if (diagnostic) sandboxDiagnostic = diagnostic.slice(0, 250);
-  });
-  const rejectPending = () => { for (const p of pending.values()) { clearTimeout(p.timer); p.reject(new Error(`Profile browser closed (${child.exitCode ?? child.signalCode ?? 'unknown'})${sandboxDiagnostic ? `: ${sandboxDiagnostic}` : ''}`)); } pending.clear(); };
+  child.on('error', () => gateway.close());
+  child.once('close', () => { gateway.close(); release(); });
+  if (options.headless) {
+    const { attachTestBrowserControl } = await import('./profile-browser-test-control.js');
+    return attachTestBrowserControl(child, profile, authorize, gateway, closed, options);
+  }
+  // A user's browser is a regular process: no CDP, injected scripts or WebDriver.
+  child.stderr?.on('data', chunk => options.diagnostics?.(String(chunk)));
   let closing = false;
   let killTimer: NodeJS.Timeout | undefined;
   const close = () => {
     if (closing) return;
-    closing = true; gateway.close();
-    // Let Chrome flush cookies to its profile before resorting to termination.
-    void send('Browser.close').catch(() => {});
-    killTimer = setTimeout(() => { if (child.exitCode === null) child.kill(); }, 1500);
+    closing = true;
+    gateway.close();
+    child.kill('SIGTERM');
+    killTimer = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }, 5000);
     killTimer.unref();
   };
-  child.on('error', () => { rejectPending(); gateway.close(); release(); });
-  child.on('exit', () => { if (killTimer) clearTimeout(killTimer); rejectPending(); gateway.close(); release(); });
-  input.on('error', close);
-  output.on('data', chunk => {
-    buffered += chunk.toString();
-    let end: number;
-    while ((end = buffered.indexOf('\0')) !== -1) {
-      const raw = buffered.slice(0, end); buffered = buffered.slice(end + 1);
-      try {
-        const message = JSON.parse(raw);
-        const p = pending.get(message.id);
-        if (p) { pending.delete(message.id); clearTimeout(p.timer); message.error ? p.reject(new Error('Profile browser command failed')) : p.resolve(message.result); }
-      } catch { /* ignore unrelated browser output */ }
-    }
-  });
+  child.once('close', () => { if (killTimer) clearTimeout(killTimer); });
   try {
-    const { targetId } = await send('Target.createTarget', { url: 'about:blank' });
-    const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
-    await send('Page.enable', {}, sessionId);
-    if (profile.timeZone) await send('Emulation.setTimezoneOverride', { timezoneId: profile.timeZone }, sessionId);
-    if (profile.locale) await send('Emulation.setLocaleOverride', { locale: profile.locale.replace('-', '_') }, sessionId);
-    if (profile.email) {
-      // Fill only the email field, never submit, and never fill a third-party origin.
-      const source = `if (location.origin === ${JSON.stringify(authorize.origin)}) {
-        const fill = () => { const field = document.querySelector('input[type="email"]');
-          if (field && !field.value) { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(field, ${JSON.stringify(profile.email)}); field.dispatchEvent(new Event('input', {bubbles:true})); field.dispatchEvent(new Event('change', {bubbles:true})); } };
-        new MutationObserver(fill).observe(document, {childList:true,subtree:true}); fill();
-      }`;
-      await send('Page.addScriptToEvaluateOnNewDocument', { source }, sessionId);
-    }
-    await send('Page.navigate', { url: authorize.href }, sessionId);
-    return { close, closed, evaluate: async (expression) => {
-      const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessionId);
-      if (result.exceptionDetails) throw new Error('Browser privacy check failed');
-      return result.result?.value;
-    } };
+    await new Promise<void>((resolve, reject) => {
+      let timer: NodeJS.Timeout | undefined;
+      const clear = () => { if (timer) clearTimeout(timer); child.off('error', fail); child.off('exit', exited); };
+      const fail = () => { clear(); reject(new Error('Profile browser could not start')); };
+      const exited = () => { clear(); reject(new Error(`Profile browser exited during startup (${child.exitCode ?? child.signalCode ?? 'unknown'})`)); };
+      child.once('error', fail); child.once('exit', exited);
+      child.once('spawn', () => { timer = setTimeout(() => { clear(); resolve(); }, 300); });
+    });
+    return { close, closed, evaluate: async () => { throw new Error('Page automation is disabled for normal profile browsers'); } };
   } catch (err) { close(); throw err; }
 }

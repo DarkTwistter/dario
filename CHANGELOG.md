@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Fork: ordinary profile browsers no longer use DevTools.** Login and IP-check windows launch natively with their URL, proxy and profile directory; no WebDriver, debugging pipe, page injection or automated email entry. Ubuntu uses a per-process `TZ` for the configured timezone. DevTools is isolated in an opt-in headless test helper.
+
 - **Fork: account management in the web UI.** The dashboard links to `/profiles/ui`, with profile creation, proxy settings, isolated sign-in, enable/disable and a CleanIP browser check. Admin credentials stay in page memory; stored proxy passwords are never returned to the browser.
 
 - **Fork: per-account proxy profiles and isolated browser sign-in.** Each profile binds OAuth, refresh and inference to its own HTTP/HTTPS proxy; missing, disabled or broken policy fails closed. Adds profile CLI/admin endpoints, persistent Chromium profiles with DNS/WebRTC protections, and an Ubuntu 24.04 installer with private noVNC access and a network-namespace launcher. Setup instructions: `docs/ubuntu-server.md`.

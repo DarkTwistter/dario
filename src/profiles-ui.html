@@ -31,7 +31,7 @@ header{border-bottom:1px solid var(--line)}.top{max-width:1240px;margin:auto;pad
 <p id="proxyHint" class="muted" hidden>Для сохранения прежней прокси оставьте все три поля прокси пустыми. Чтобы заменить её, укажите адрес и данные авторизации заново.</p>
 <label>Email Claude<input id="email" type="email" autocomplete="off" placeholder="account@example.com"></label>
 <div class="two"><label>Часовой пояс<input id="timeZone" placeholder="Europe/Berlin"></label><label>Язык браузера<input id="locale" placeholder="en-US"></label></div>
-<p class="muted">У Claude нет собственного пароля. Вход через email-код, ссылку или Google выполняется в отдельном окне браузера.</p>
+<p class="muted">Браузер запускается без автоматизации: email и код вводятся вручную. Часовой пояс укажите по месту выхода прокси. У Claude нет собственного пароля.</p>
 <div class="form-actions"><button id="saveProfile" class="primary" type="submit">Создать профиль</button><button id="cancelEdit" type="button" hidden>Отмена</button></div>
 </fieldset>
 </form><div id="formStatus" class="note" role="status" aria-live="polite"></div>

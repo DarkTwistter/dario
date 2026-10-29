@@ -556,6 +556,7 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
     let port = 0;
     let browser: { close(): void } | undefined;
     let finished = false;
+    let callbackReceived = false;
     const timeout = setTimeout(() => fail(new Error('OAuth flow timed out after 5 minutes.')), 300_000);
     timeout.unref();
     const cleanup = () => { finished = true; clearTimeout(timeout); server.close(); browser?.close(); };
@@ -586,6 +587,7 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
           return;
         }
 
+        callbackReceived = true;
         res.writeHead(302, {
           Location: 'https://platform.claude.com/oauth/code/success?app=claude-code',
         });
@@ -677,6 +679,9 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
         void openProfileBrowser(alias, authUrl, `http://localhost:${port}/callback`).then((opened) => {
           browser = opened;
           if (finished) opened.close();
+          else void opened.closed.then(() => {
+            if (!finished && !callbackReceived) fail(new Error('Profile browser closed before authorization completed. Start login again.'));
+          });
         }).catch((err) => fail(err instanceof Error ? err : new Error('Profile browser failed')));
       } else {
         try { openBrowser(authUrl); } catch { /* non-fatal: user has the URL printed above */ }
