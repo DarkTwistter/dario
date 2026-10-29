@@ -21,7 +21,7 @@ const { saveNetworkProfile } = await import('../dist/account-profiles.js');
 const { openProfileBrowser } = await import('../dist/profile-browser.js');
 await saveNetworkProfile({ version: 1, alias: 'native', enabled: true, proxyUrl: 'http://user:secret@127.0.0.1:9', timeZone: 'Europe/Amsterdam', locale: 'en-US', email: 'test@example.com' });
 const previousTZ = process.env.TZ;
-let browser;
+let browser, secondBrowser;
 try {
   browser = await openProfileBrowser('native', 'https://claude.ai/oauth/authorize?state=fixture');
   let launch;
@@ -42,11 +42,28 @@ try {
   assert.equal(launch.resolved, 'Europe/Amsterdam');
   assert.equal(process.env.TZ, previousTZ, 'per-profile timezone never changes the Dario process');
   await assert.rejects(browser.evaluate('navigator.webdriver'), /automation is disabled/);
+  // Two ordinary windows must never join the same Chrome process/data directory or gateway.
+  const secondRecord = join(home, 'second-launch.json');
+  process.env.DARIO_NATIVE_BROWSER_RECORD = secondRecord;
+  await saveNetworkProfile({ version: 1, alias: 'second', enabled: true, proxyUrl: 'http://second:other-secret@127.0.0.1:8', timeZone: 'America/New_York' });
+  secondBrowser = await openProfileBrowser('second', 'https://claude.ai/oauth/authorize?state=second');
+  const secondLaunch = JSON.parse(await readFile(secondRecord, 'utf8'));
+  for (const prefix of ['--user-data-dir=', '--proxy-server=']) {
+    assert.notEqual(launch.args.find(arg => arg.startsWith(prefix)), secondLaunch.args.find(arg => arg.startsWith(prefix)));
+  }
+  assert.equal(secondLaunch.timezone, 'America/New_York');
+  assert.equal(secondLaunch.args.some(arg => arg.includes('other-secret')), false);
+  await assert.rejects(openProfileBrowser('native', 'https://claude.ai/'), /already open/);
   const holder = JSON.parse(await readFile(join(process.env.DARIO_PROFILE_ROOT, 'native', 'browser.lock'), 'utf8'));
   const deadlineClose = setTimeout(() => { throw new Error('Browser stayed open after losing its lock'); }, 5000);
   try {
     process.kill(holder.holderPid, 'SIGKILL');
     await browser.closed;
   } finally { clearTimeout(deadlineClose); }
-  console.log('PASS: native browser opens the OAuth URL directly, no automation/debugging/masking switches, native TZ, proxy credentials stay outside browser argv');
-} finally { browser?.close(); if (browser) await browser.closed; }
+  await assert.rejects(openProfileBrowser('second', 'https://claude.ai/'), /already open/, 'closing one profile does not close the other');
+  console.log('PASS: native OAuth launch without automation, concurrent isolated data directories/gateways/timezones, separate lifecycle and secret-free argv');
+} finally {
+  browser?.close(); secondBrowser?.close();
+  if (browser) await browser.closed;
+  if (secondBrowser) await secondBrowser.closed;
+}

@@ -23,7 +23,6 @@ repo_ref=${DARIO_REPO_REF:-feat/account-proxy-profiles}
 repo_dir=/opt/dario
 state_dir=/var/lib/dario
 node_dir=/opt/dario-node
-browser_installer=/opt/dario-browser-installer
 export DEBIAN_FRONTEND=noninteractive
 
 echo "Preparing Ubuntu 24.04 / $node_arch"
@@ -70,33 +69,9 @@ npm ci
 npm run build
 chmod 0755 deploy/ubuntu/browser-launcher.sh deploy/ubuntu/desktop.sh deploy/ubuntu/setup.sh
 
-# Download an architecture-matched standalone Chromium; no Ubuntu Snap nesting.
-# Playwright is only the installer and is not added to Dario's runtime dependencies.
-export PLAYWRIGHT_BROWSERS_PATH=/opt/dario-browsers
-install -d -m 0755 "$browser_installer" "$PLAYWRIGHT_BROWSERS_PATH"
-npm install --prefix "$browser_installer" --no-audit --no-fund playwright@latest
-"$browser_installer/node_modules/.bin/playwright" install --with-deps chromium
-browser_binary=$(node -e 'process.stdout.write(require("/opt/dario-browser-installer/node_modules/playwright").chromium.executablePath())')
-[[ -x $browser_binary ]] || { echo 'Downloaded Chromium executable is missing.'; exit 1; }
-# The default root umask is private; browser executable/dependencies must be readable by the service user.
-chmod -R a+rX "$node_dir" "$repo_dir" "$browser_installer" "$PLAYWRIGHT_BROWSERS_PATH"
-ln -sfn "$browser_binary" /usr/local/libexec/dario/chromium
-
-# Dedicated, root-owned executable for a narrowly scoped AppArmor user-namespace permission.
-install -o root -g dario -m 0750 /usr/bin/unshare /usr/local/libexec/dario/unshare
-cat > /etc/apparmor.d/dario-browser-userns <<EOF
-abi <abi/4.0>,
-include <tunables/global>
-/usr/local/libexec/dario/unshare flags=(default_allow) {
-  userns,
-}
-"$browser_binary" flags=(default_allow) {
-  userns,
-}
-EOF
-if [[ -d /sys/kernel/security/apparmor ]]; then
-  apparmor_parser --replace /etc/apparmor.d/dario-browser-userns
-fi
+# Install ordinary Google Chrome Stable; keep namespace/proxy isolation unchanged.
+chmod -R a+rX "$node_dir" "$repo_dir"
+bash "$repo_dir/deploy/ubuntu/install-stable-browser.sh" --prepare-only
 
 if [[ ! -e /etc/dario/dario.env ]]; then
   api_key=$(openssl rand -hex 32)
@@ -109,7 +84,7 @@ DARIO_ADMIN=1
 DARIO_ADMIN_TOKEN=$admin_token
 DARIO_REQUIRE_ACCOUNT_PROXY=1
 DARIO_IGNORE_CC_CREDENTIALS=1
-DARIO_BROWSER_EXECUTABLE=/usr/local/libexec/dario/chromium
+DARIO_BROWSER_EXECUTABLE=/usr/local/libexec/dario/chrome
 DARIO_BROWSER_LAUNCHER=/opt/dario/deploy/ubuntu/browser-launcher.sh
 DARIO_UNSHARE_EXECUTABLE=/usr/local/libexec/dario/unshare
 DARIO_BROWSER_CHECK_TIMEOUT_MINUTES=30
@@ -128,7 +103,7 @@ fi
 echo 'Testing the real browser, its isolated network, DNS and WebRTC before starting services...'
 runuser -u dario -- env HOME="$state_dir" PATH="$PATH" node test/profile-browser-lock.mjs
 runuser -u dario -- env HOME="$state_dir" PATH="$PATH" \
-  DARIO_BROWSER_EXECUTABLE=/usr/local/libexec/dario/chromium \
+  DARIO_BROWSER_EXECUTABLE=/usr/local/libexec/dario/chrome \
   DARIO_BROWSER_LAUNCHER="$repo_dir/deploy/ubuntu/browser-launcher.sh" \
   DARIO_UNSHARE_EXECUTABLE=/usr/local/libexec/dario/unshare \
   "$state_dir/.bun/bin/bun" scripts/test-profile-browser-privacy.mjs
@@ -156,9 +131,9 @@ if [[ $skip_services == 0 ]]; then
   done
   curl --fail --silent --show-error --output /dev/null http://127.0.0.1:6080/vnc.html
 fi
-printf 'Node: %s\nBun: %s\nPlaywright installer: %s\nGit: %s\n' \
+printf 'Node: %s\nBun: %s\nBrowser: %s\nGit: %s\n' \
   "$(node --version)" "$("$state_dir/.bun/bin/bun" --version)" \
-  "$("$browser_installer/node_modules/.bin/playwright" --version)" "$(git rev-parse HEAD)" > /etc/dario/install-manifest
+  "$(/opt/google/chrome/chrome --version)" "$(git rev-parse HEAD)" > /etc/dario/install-manifest
 echo
 echo 'Dario prepared. One Dario process, one isolated browser per open profile.'
 echo 'On your computer: ssh -N -L 3456:127.0.0.1:3456 -L 6080:127.0.0.1:6080 USER@SERVER'
