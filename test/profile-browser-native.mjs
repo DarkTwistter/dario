@@ -42,5 +42,11 @@ try {
   assert.equal(launch.resolved, 'Europe/Amsterdam');
   assert.equal(process.env.TZ, previousTZ, 'per-profile timezone never changes the Dario process');
   await assert.rejects(browser.evaluate('navigator.webdriver'), /automation is disabled/);
+  const holder = JSON.parse(await readFile(join(process.env.DARIO_PROFILE_ROOT, 'native', 'browser.lock'), 'utf8'));
+  const deadlineClose = setTimeout(() => { throw new Error('Browser stayed open after losing its lock'); }, 5000);
+  try {
+    process.kill(holder.holderPid, 'SIGKILL');
+    await browser.closed;
+  } finally { clearTimeout(deadlineClose); }
   console.log('PASS: native browser opens the OAuth URL directly, no automation/debugging/masking switches, native TZ, proxy credentials stay outside browser argv');
 } finally { browser?.close(); if (browser) await browser.closed; }

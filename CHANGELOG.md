@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Fork: stale browser lock files no longer strand profiles on POSIX.** Browser ownership uses a kernel advisory lock held by Python 3; old empty files recover automatically, while active windows and live Chromium singleton owners still block concurrent launches. Browser shutdown waits for lock release before reporting completion.
+
 - **Fork: configurable IP-check browser lifetime.** `DARIO_BROWSER_CHECK_TIMEOUT_MINUTES` defaults to 30 minutes; `0` leaves the window open until manually closed. The web UI displays the configured duration. OAuth login keeps its separate completion/timeout lifecycle.
 
 - **Fork: ordinary profile browsers no longer use DevTools.** Login and IP-check windows launch natively with their URL, proxy and profile directory; no WebDriver, debugging pipe, page injection or automated email entry. Ubuntu uses a per-process `TZ` for the configured timezone. DevTools is isolated in an opt-in headless test helper.

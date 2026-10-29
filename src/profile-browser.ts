@@ -1,7 +1,7 @@
 /** Dedicated Chromium process + authenticated upstream proxy. No third-party runtime dependencies. */
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, open, unlink, mkdtemp, chmod, rmdir } from 'node:fs/promises';
+import { mkdir, readFile, mkdtemp, chmod, rmdir } from 'node:fs/promises';
 import { createServer, request as httpRequest, type RequestOptions } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import type { Socket } from 'node:net';
@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { userInfo, tmpdir } from 'node:os';
 import { AccountProxyError, profileDirectory, requireNetworkProfile, watchNetworkPolicy } from './account-profiles.js';
 import { durableWriteFile } from './durable-write.js';
+import { acquireProfileBrowserLock } from './profile-browser-lock.js';
 
 export interface ProfileBrowser {
   close(): void;
@@ -139,18 +140,15 @@ export function findProfileBrowser(): string {
 }
 
 export async function openProfileBrowser(alias: string, authorizeUrl: string, callbackUrl?: string, options: { headless?: boolean; diagnostics?: (message: string) => void; networkLog?: string } = {}): Promise<ProfileBrowser> {
-  const lockPath = join(profileDirectory(alias), 'browser.lock');
-  await mkdir(profileDirectory(alias), { recursive: true, mode: 0o700 });
-  let lock;
-  try { lock = await open(lockPath, 'wx', 0o600); }
-  catch { throw new Error('This profile browser is already open (or browser.lock remains after an interrupted launch)'); }
-  await lock.close();
-  const release = () => { void unlink(lockPath).catch(() => {}); };
-  try { return await launchProfileBrowser(alias, authorizeUrl, callbackUrl, options, release); }
-  catch (err) { release(); throw err; }
+  const lock = await acquireProfileBrowserLock(profileDirectory(alias));
+  try {
+    const browser = await launchProfileBrowser(alias, authorizeUrl, callbackUrl, options, lock.release);
+    void lock.lost.then(() => browser.close());
+    return browser;
+  } catch (err) { await lock.release(); throw err; }
 }
 
-async function launchProfileBrowser(alias: string, authorizeUrl: string, callbackUrl: string | undefined, options: { headless?: boolean; diagnostics?: (message: string) => void; networkLog?: string }, release: () => void): Promise<ProfileBrowser> {
+async function launchProfileBrowser(alias: string, authorizeUrl: string, callbackUrl: string | undefined, options: { headless?: boolean; diagnostics?: (message: string) => void; networkLog?: string }, release: () => Promise<void>): Promise<ProfileBrowser> {
   const profile = requireNetworkProfile(alias);
   const authorize = new URL(authorizeUrl);
   if (authorize.protocol !== 'https:') throw new Error('Profile authorization requires HTTPS');
@@ -193,9 +191,11 @@ async function launchProfileBrowser(alias: string, authorizeUrl: string, callbac
   const child = launcher
     ? spawn(launcher, [executable, ...browserArgs], { stdio, env: { ...browserEnv, DARIO_BROWSER_GATEWAY: gateway.url, DARIO_BROWSER_GATEWAY_SOCKET: gateway.socketPath } })
     : spawn(executable, browserArgs, { stdio, env: browserEnv });
-  const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
+  const closed = new Promise<void>(resolve => child.once('close', () => {
+    gateway.close();
+    void release().then(resolve);
+  }));
   child.on('error', () => gateway.close());
-  child.once('close', () => { gateway.close(); release(); });
   if (options.headless) {
     const { attachTestBrowserControl } = await import('./profile-browser-test-control.js');
     return attachTestBrowserControl(child, profile, authorize, gateway, closed, options);

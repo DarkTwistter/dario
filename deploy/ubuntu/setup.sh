@@ -126,6 +126,7 @@ if [[ ! -e $state_dir/.vnc/passwd ]]; then
 fi
 
 echo 'Testing the real browser, its isolated network, DNS and WebRTC before starting services...'
+runuser -u dario -- env HOME="$state_dir" PATH="$PATH" node test/profile-browser-lock.mjs
 runuser -u dario -- env HOME="$state_dir" PATH="$PATH" \
   DARIO_BROWSER_EXECUTABLE=/usr/local/libexec/dario/chromium \
   DARIO_BROWSER_LAUNCHER="$repo_dir/deploy/ubuntu/browser-launcher.sh" \
