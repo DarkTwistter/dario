@@ -161,6 +161,8 @@ echo
 echo 'Dario prepared. One Dario process, one isolated browser per open profile.'
 echo 'On your computer: ssh -N -L 3456:127.0.0.1:3456 -L 6080:127.0.0.1:6080 USER@SERVER'
 echo 'Then open: http://127.0.0.1:6080/vnc.html'
+echo 'Manage accounts: http://127.0.0.1:3456/profiles/ui'
+echo 'Dashboard: http://127.0.0.1:3456/analytics/ui'
 echo 'VNC password: sudo cat /etc/dario/vnc-password'
 echo 'API/admin secrets: sudo cat /etc/dario/dario.env'
 echo 'First profile: see /opt/dario/docs/ubuntu-server.md'

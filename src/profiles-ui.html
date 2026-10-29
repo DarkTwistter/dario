@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>Аккаунты · Dario</title>
+<style>
+:root{color-scheme:dark;--bg:#111211;--panel:#1b1d1b;--line:#343834;--text:#eef1e9;--dim:#a4aea0;--accent:#d6eea5;--bad:#ffad9f}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,sans-serif}a{color:var(--accent)}button,input{font:inherit}button,.button{cursor:pointer;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--text);padding:9px 14px;text-decoration:none;display:inline-block}button:hover,.button:hover{border-color:var(--accent)}button:disabled{cursor:wait;opacity:.5}.primary{background:var(--accent);border-color:var(--accent);color:#17200f;font-weight:650}.danger{color:var(--bad)}[hidden]{display:none!important}
+header{border-bottom:1px solid var(--line)}.top{max-width:1240px;margin:auto;padding:20px 28px;display:flex;align-items:center;justify-content:space-between;gap:20px}.brand{font-size:23px;font-weight:750;letter-spacing:-1px}.top nav{display:flex;gap:16px;align-items:center}.wrap{max-width:1240px;margin:auto;padding:40px 28px}h1{font-size:36px;line-height:1.15;letter-spacing:-1.4px;margin:0 0 12px}h2{font-size:19px;margin:0 0 18px}p{margin:0 0 16px;color:var(--dim)}.intro{max-width:750px}.layout{display:grid;grid-template-columns:340px minmax(0,1fr);gap:24px;margin-top:28px;align-items:start}.card{border:1px solid var(--line);border-radius:15px;background:var(--panel);padding:24px}.connection{margin:24px 0;display:flex;align-items:end;gap:12px;flex-wrap:wrap}.connection label{flex:1;min-width:230px;max-width:560px}label{display:block;font-size:13px;color:var(--dim);margin-bottom:15px}label input{margin-top:6px}input{display:block;width:100%;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;color:var(--text);outline:none}input:focus{border-color:var(--accent)}.connection label{margin:0}.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}.muted{color:var(--dim);font-size:13px}.note{white-space:pre-wrap;margin-top:14px;font-size:14px}.note.error{color:var(--bad)}.note.ok{color:var(--accent)}.list-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}.list-head h2{margin:0}.profile{border-top:1px solid var(--line);padding:20px 0}.profile:first-child{border-top:0;padding-top:0}.profile:last-child{padding-bottom:0}.profile-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px}.alias{font-size:18px;font-weight:650;overflow-wrap:anywhere}.badge{border:1px solid var(--line);border-radius:20px;padding:3px 9px;font-size:12px;white-space:nowrap;color:var(--accent)}.badge.off{color:var(--dim)}.details{font:13px/1.8 ui-monospace,monospace;color:var(--dim);overflow-wrap:anywhere;margin-bottom:14px}.actions{display:flex;flex-wrap:wrap;gap:8px}.actions button{font-size:13px;padding:7px 11px}.footnote{font-size:12px;margin-top:24px}.form-actions{display:flex;gap:10px}.empty{padding:22px 0;color:var(--dim)}@media(max-width:850px){.layout{grid-template-columns:1fr}.top,.wrap{padding:20px}.top{flex-wrap:wrap}h1{font-size:30px}.connection{align-items:stretch}.connection label{max-width:none}}
+</style>
+</head>
+<body>
+<header><div class="top"><div class="brand">dario <span class="muted">/ аккаунты</span></div><nav><a href="/analytics/ui">Статистика</a><a class="button" href="http://127.0.0.1:6080/vnc.html" target="_blank" rel="noopener noreferrer">Открыть браузер сервера ↗</a></nav></div></header>
+<main class="wrap">
+<h1>Своя прокси для каждого аккаунта</h1>
+<p class="intro">Создайте профиль, укажите прокси и нажмите «Войти». В браузере сервера завершите вход в Claude — аккаунт появится в работающем пуле автоматически.</p>
+<form id="connection" class="connection">
+<label>Admin-токен Dario<input id="adminToken" type="password" autocomplete="off" required placeholder="DARIO_ADMIN_TOKEN"></label>
+<button class="primary" id="connect" type="submit">Подключиться</button><button id="disconnect" type="button" hidden>Отключиться</button>
+</form>
+<p class="muted">Токен хранится только в памяти этой страницы. Обычный API-ключ и токен статистики не дают доступ к управлению профилями.</p>
+<div id="connectionStatus" class="note" role="status" aria-live="polite"></div>
+<div class="layout">
+<section class="card">
+<h2 id="formTitle">Новый профиль</h2>
+<form id="profileForm">
+<fieldset id="profileFields" disabled style="border:0;padding:0;margin:0;min-width:0">
+<label>Название профиля<input id="alias" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}" placeholder="work"></label>
+<label>Прокси HTTP / HTTPS<input id="proxyServer" type="url" required autocomplete="off" placeholder="http://proxy.example:8080"></label>
+<div class="two"><label>Логин прокси<input id="proxyUser" autocomplete="off"></label><label>Пароль прокси<input id="proxyPassword" type="password" autocomplete="new-password"></label></div>
+<p id="proxyHint" class="muted" hidden>Для сохранения прежней прокси оставьте все три поля прокси пустыми. Чтобы заменить её, укажите адрес и данные авторизации заново.</p>
+<label>Email Claude<input id="email" type="email" autocomplete="off" placeholder="account@example.com"></label>
+<div class="two"><label>Часовой пояс<input id="timeZone" placeholder="Europe/Berlin"></label><label>Язык браузера<input id="locale" placeholder="en-US"></label></div>
+<p class="muted">У Claude нет собственного пароля. Вход через email-код, ссылку или Google выполняется в отдельном окне браузера.</p>
+<div class="form-actions"><button id="saveProfile" class="primary" type="submit">Создать профиль</button><button id="cancelEdit" type="button" hidden>Отмена</button></div>
+</fieldset>
+</form><div id="formStatus" class="note" role="status" aria-live="polite"></div>
+</section>
+<section class="card"><div class="list-head"><h2>Профили <span id="count" class="muted"></span></h2><button id="refresh" disabled>Обновить</button></div><div id="profiles"><div class="empty">Подключитесь с admin-токеном, чтобы увидеть аккаунты.</div></div><div id="actionStatus" class="note" role="status" aria-live="polite"></div></section>
+</div>
+<p class="footnote">На Ubuntu откройте эту страницу и noVNC через SSH-туннель. Cookies и сессии каждого профиля хранятся отдельно. При отключении прокси прямого соединения с Claude не выполняется.</p>
+</main>
+<script id="profile-helpers">
+var DarioProfiles = {
+  proxyUrl: function(server, username, password) {
+    var u;
+    try { u = new URL(server); } catch (_) { throw new Error('Укажите полный адрес прокси: http://host:port или https://host:port.'); }
+    if (!/^https?:$/.test(u.protocol) || u.pathname !== '/' || u.search || u.hash) throw new Error('Поддерживается только HTTP/HTTPS-прокси без пути и параметров.');
+    if (username || password) { u.username = encodeURIComponent(username); u.password = encodeURIComponent(password); }
+    return u.href;
+  },
+  status: function(p) { return !p.enabled ? 'Отключён' : p.loginPending ? 'Ожидает входа' : p.checkOpen ? 'Проверка в браузере' : p.authenticated ? 'Авторизован' : 'Нужен вход'; }
+};
+</script>
+<script>
+(function(){
+'use strict';
+var $=function(id){return document.getElementById(id);};
+var token='',connected=false,editing=null,profiles=[],busy=new Set(),generation=0;
+function message(id,text,error){$(id).textContent=text;$(id).className='note '+(error?'error':'ok');}
+function text(tag,value,cls){var node=document.createElement(tag);node.textContent=value;if(cls)node.className=cls;return node;}
+async function request(path,body){
+  if(!token)throw new Error('Введите admin-токен.');
+  var controller=new AbortController(),timer=setTimeout(function(){controller.abort();},330000);
+  try {
+    var response=await fetch(path,{method:body===undefined?'GET':'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:controller.signal,cache:'no-store'});
+    var data=await response.json().catch(function(){return {};});
+    if(!response.ok){
+      if(response.status===401||response.status===403)throw new Error('Нет доступа. Проверьте DARIO_ADMIN_TOKEN.');
+      if(response.status===404)throw new Error('Управление профилями недоступно. Нужны обновлённый форк и DARIO_ADMIN=1.');
+      throw new Error(typeof data.error==='string'?data.error:'Не удалось выполнить действие ('+response.status+').');
+    }
+    return data;
+  } finally {clearTimeout(timer);}
+}
+function resetForm(){editing=null;$('profileForm').reset();$('alias').disabled=false;$('proxyServer').required=true;$('proxyHint').hidden=true;$('formTitle').textContent='Новый профиль';$('saveProfile').textContent='Создать профиль';$('cancelEdit').hidden=true;}
+function edit(p){resetForm();editing=p.alias;$('alias').value=p.alias;$('alias').disabled=true;$('email').value=p.email||'';$('timeZone').value=p.timeZone||'';$('locale').value=p.locale||'';$('proxyServer').required=false;$('proxyHint').hidden=false;$('formTitle').textContent='Настройки · '+p.alias;$('saveProfile').textContent='Сохранить';$('cancelEdit').hidden=false;message('formStatus','Текущие логин и пароль прокси не возвращаются сервером.');$('proxyServer').focus();}
+function render(){
+  var list=$('profiles');list.replaceChildren();$('count').textContent='('+profiles.length+')';
+  if(!profiles.length){list.append(text('div','Профилей пока нет. Создайте первый с помощью формы.','empty'));return;}
+  profiles.forEach(function(p){
+    var card=text('article','','profile'),head=text('div','','profile-head');head.append(text('span',p.alias,'alias'),text('span',DarioProfiles.status(p),'badge'+(!p.enabled?' off':'')));card.append(head);
+    var details=text('div','','details');details.append(text('div',p.proxy+(p.proxyAuthenticated?' · с авторизацией':'')),text('div',p.email||'Email не указан'));
+    if(p.timeZone||p.locale)details.append(text('div',[p.timeZone,p.locale].filter(Boolean).join(' · ')));card.append(details);
+    var actions=text('div','','actions');
+    function button(label,action,disabled,cls){var b=text('button',label,cls||'');b.type='button';b.disabled=!!disabled;b.addEventListener('click',action);actions.append(b);}
+    var running=busy.has(p.alias)||p.loginPending||p.checkOpen;
+    button(p.loginPending?'Ожидаем входа…':p.authenticated?'Войти снова':'Войти',function(){act(p,'login');},running||!p.enabled,'primary');
+    button('Проверить IP',function(){act(p,'check');},running||!p.enabled);
+    button('Настройки',function(){edit(p);},running);
+    button(p.enabled?'Отключить':'Включить',function(){act(p,p.enabled?'disable':'enable');},busy.has(p.alias),p.enabled?'danger':'');
+    card.append(actions);list.append(card);
+  });
+}
+async function reload(){var current=generation,data=await request('/admin/profiles');if(current!==generation)return;profiles=data.profiles||[];render();}
+async function act(p,operation){
+  var current=generation;busy.add(p.alias);render();
+  message('actionStatus',operation==='login'?'Открывается браузер профиля «'+p.alias+'». Перейдите в браузер сервера и завершите вход в Claude.':operation==='check'?'Открываем CleanIP в браузере сервера…':'Применяем настройку…');
+  try{await request('/admin/profiles/'+encodeURIComponent(p.alias)+'/'+operation,{});if(current!==generation)return;message('actionStatus',operation==='login'?'Аккаунт «'+p.alias+'» авторизован и добавлен в пул.':operation==='check'?'CleanIP открыт в браузере сервера. Окно закроется автоматически через 5 минут.':'Настройка сохранена.');await reload();}
+  catch(error){if(current===generation)message('actionStatus',error.message,true);}
+  finally{busy.delete(p.alias);if(current===generation&&connected)render();}
+}
+$('connection').addEventListener('submit',async function(event){
+  event.preventDefault();generation++;token=$('adminToken').value.trim();$('connect').disabled=true;
+  try{await reload();connected=true;$('profileFields').disabled=false;$('refresh').disabled=false;$('disconnect').hidden=false;$('adminToken').value='';message('connectionStatus','Подключено. Можно добавлять аккаунты.');}
+  catch(error){connected=false;token='';$('profileFields').disabled=true;$('refresh').disabled=true;message('connectionStatus',error.message,true);}
+  finally{$('connect').disabled=false;}
+});
+$('disconnect').addEventListener('click',function(){generation++;connected=false;token='';$('adminToken').value='';profiles=[];resetForm();$('profileFields').disabled=true;$('refresh').disabled=true;$('disconnect').hidden=true;$('profiles').replaceChildren(text('div','Подключение закрыто.','empty'));$('count').textContent='';message('connectionStatus','Токен удалён из памяти страницы.');message('actionStatus','');message('formStatus','');});
+$('cancelEdit').addEventListener('click',function(){resetForm();message('formStatus','');});
+$('refresh').addEventListener('click',function(){reload().catch(function(error){message('actionStatus',error.message,true);});});
+$('profileForm').addEventListener('submit',async function(event){
+  event.preventDefault();var current=generation,alias=editing||$('alias').value.trim(),isEdit=!!editing;
+  try{
+    var body={email:$('email').value.trim(),timeZone:isEdit?$('timeZone').value.trim():$('timeZone').value.trim()||undefined,locale:isEdit?$('locale').value.trim():$('locale').value.trim()||undefined};
+    if($('proxyServer').value.trim())body.proxyUrl=DarioProfiles.proxyUrl($('proxyServer').value.trim(),$('proxyUser').value,$('proxyPassword').value);
+    else if($('proxyUser').value||$('proxyPassword').value)throw new Error('Для замены данных авторизации укажите и адрес прокси.');
+    if(!isEdit&&!body.proxyUrl)throw new Error('Укажите прокси профиля.');
+    $('profileFields').disabled=true;
+    if(!isEdit)body.alias=alias;
+    await request(isEdit?'/admin/profiles/'+encodeURIComponent(alias)+'/update':'/admin/profiles',body);
+    if(current!==generation)return;
+    resetForm();message('formStatus',isEdit?'Настройки сохранены.':'Профиль создан. Теперь нажмите «Войти» у аккаунта.');await reload();
+  }catch(error){if(current===generation)message('formStatus',error.message,true);}
+  finally{if(current===generation)$('profileFields').disabled=!connected;}
+});
+setInterval(function(){if(connected)reload().catch(function(error){message('actionStatus',error.message,true);});},5000);
+})();
+</script>
+</body>
+</html>

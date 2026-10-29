@@ -87,6 +87,7 @@ import {
   addAccountViaOAuth,
 } from './accounts.js';
 import { loadNetworkProfile, saveNetworkProfile, listNetworkProfiles, publicNetworkProfile, requireNetworkProfile, validateProfile } from './account-profiles.js';
+import { openProfileBrowser, type ProfileBrowser } from './profile-browser.js';
 import {
   startAddCodexAccount,
   completeAddCodexAccount,
@@ -215,7 +216,7 @@ export interface AdminCodexAccountRecord extends CodexSeatState {
 
 export interface AdminAuditEvent {
   action: 'login_start' | 'login_complete' | 'account_remove' | 'auth_reject' | 'rate_limited'
-    | 'profile_create' | 'profile_enable' | 'profile_disable'
+    | 'profile_create' | 'profile_enable' | 'profile_disable' | 'profile_update' | 'profile_check'
     | 'key_create' | 'key_revoke' | 'key_rotate' | 'key_budget';
   /** Which engine's credentials the event touched; absent means Claude, the only engine before codex joined (dario#1009). */
   engine?: 'codex';
@@ -306,6 +307,8 @@ const pendingLogins = new Map<string, PendingLogin>();
 // The ChatGPT seats' pending logins live apart: an alias may name a Claude
 // seat and a ChatGPT seat at once (the stores are separate directories).
 const pendingCodexLogins = new Map<string, PendingLogin>();
+const profileLogins = new Set<string>();
+const profileChecks = new Map<string, { browser: ProfileBrowser; timer: NodeJS.Timeout }>();
 
 function prunePending(now: number): void {
   for (const map of [pendingLogins, pendingCodexLogins]) {
@@ -544,7 +547,7 @@ export async function handleAdminRequest(
   deps: AdminDeps,
 ): Promise<boolean> {
   const method = req.method ?? 'GET';
-  const profileTarget = /^\/admin\/profiles\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/(login|enable|disable)$/.exec(urlPath);
+  const profileTarget = /^\/admin\/profiles\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/(login|enable|disable|update|check)$/.exec(urlPath);
   const remote = req.socket?.remoteAddress;
   const isAccountDelete =
     method === 'DELETE' && urlPath.startsWith(ACCOUNTS_PREFIX) && urlPath.length > ACCOUNTS_PREFIX.length;
@@ -617,7 +620,12 @@ export async function handleAdminRequest(
   try {
     if (urlPath === '/admin/profiles') {
       if (method === 'GET') {
-        send(res, 200, { profiles: (await listNetworkProfiles()).map(publicNetworkProfile) });
+        const profiles = await Promise.all((await listNetworkProfiles()).map(async p => {
+          const account = await loadAccount(p.alias);
+          return { ...publicNetworkProfile(p), authenticated: !!account, proxyAuthenticated: !!(new URL(p.proxyUrl).username || new URL(p.proxyUrl).password),
+            expiresAt: account?.expiresAt ?? null, loginPending: profileLogins.has(p.alias), checkOpen: profileChecks.has(p.alias) };
+        }));
+        send(res, 200, { profiles });
         return true;
       }
       if (method !== 'POST') { send(res, 405, { error: 'Use GET or POST' }); return true; }
@@ -644,11 +652,37 @@ export async function handleAdminRequest(
         // Keep this HTTP call pending while the user completes the separate browser flow.
         // Other requests continue normally. The callback binds only on loopback.
         requireNetworkProfile(alias);
+        if (profileLogins.has(alias)) { send(res, 409, { error: 'Login is already in progress for this profile' }); return true; }
         deps.audit?.({ action: 'login_start', alias, ok: true, status: 200, remote });
-        const creds = await addAccountViaOAuth(alias);
-        await deps.onAccountsChanged?.();
-        deps.audit?.({ action: 'login_complete', alias, ok: true, status: 200, remote });
-        send(res, 200, { alias, status: 'added', expires_at: creds.expiresAt });
+        profileLogins.add(alias);
+        try {
+          const creds = await addAccountViaOAuth(alias);
+          await deps.onAccountsChanged?.();
+          deps.audit?.({ action: 'login_complete', alias, ok: true, status: 200, remote });
+          send(res, 200, { alias, status: 'added', expires_at: creds.expiresAt });
+        } finally { profileLogins.delete(alias); }
+      } else if (operation === 'update') {
+        if (profileLogins.has(alias) || profileChecks.has(alias)) { send(res, 409, { error: 'Close the profile browser before editing its settings' }); return true; }
+        const body = await readJsonBody(req);
+        const updated = validateProfile({ ...profile,
+          proxyUrl: body.proxyUrl === undefined ? profile.proxyUrl : body.proxyUrl,
+          email: body.email === undefined ? profile.email : body.email,
+          timeZone: body.timeZone === undefined ? profile.timeZone : body.timeZone === '' ? undefined : body.timeZone,
+          locale: body.locale === undefined ? profile.locale : body.locale === '' ? undefined : body.locale,
+        }, alias);
+        await saveNetworkProfile(updated);
+        deps.audit?.({ action: 'profile_update', alias, ok: true, status: 200, remote });
+        send(res, 200, publicNetworkProfile(updated));
+      } else if (operation === 'check') {
+        requireNetworkProfile(alias);
+        if (profileLogins.has(alias) || profileChecks.has(alias)) { send(res, 409, { error: 'This profile browser is already in use' }); return true; }
+        const browser = await openProfileBrowser(alias, 'https://cleanip.io/claude');
+        const timer = setTimeout(() => browser.close(), 300_000);
+        timer.unref();
+        profileChecks.set(alias, { browser, timer });
+        void browser.closed.then(() => { clearTimeout(timer); profileChecks.delete(alias); });
+        deps.audit?.({ action: 'profile_check', alias, ok: true, status: 202, remote });
+        send(res, 202, { alias, status: 'browser_open', expires_in_seconds: 300 });
       } else {
         const enabled = operation === 'enable';
         await saveNetworkProfile({ ...profile, enabled });
@@ -986,6 +1020,9 @@ export async function handleAdminRequest(
 
 /** Test-only: clear the pending-login map between cases. */
 export function _resetAdminStateForTest(): void {
+  profileLogins.clear();
+  for (const check of profileChecks.values()) { clearTimeout(check.timer); check.browser.close(); }
+  profileChecks.clear();
   pendingLogins.clear();
   pendingCodexLogins.clear();
 }

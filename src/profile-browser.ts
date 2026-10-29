@@ -160,6 +160,7 @@ async function launchProfileBrowser(alias: string, authorizeUrl: string, callbac
   preferences.net = { ...preferences.net, network_prediction_options: 2 };
   preferences.dns_over_https = { mode: 'off' };
   if (profile.locale) preferences.intl = { ...preferences.intl, accept_languages: profile.locale };
+  else if (preferences.intl) delete preferences.intl.accept_languages;
   await durableWriteFile(preferencesPath, JSON.stringify(preferences));
   const gateway = await startProfileGateway(alias, callbackUrl, { unixSocket: !!launcher });
   const browserArgs = [

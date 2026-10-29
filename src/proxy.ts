@@ -19,6 +19,7 @@ import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion }
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, activeParkedBuckets, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, parsePoolHeadroomFloor, describePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail } from './pool.js';
 import { backfillIdentity } from './accounts.js';
 import { accountFetch, AccountProxyError } from './account-profiles.js';
+import { profilesUiPage } from './profiles-ui.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM, CREDITS_CLAIM } from './analytics.js';
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
@@ -3450,6 +3451,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (urlPath === '/analytics/ui' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
       res.end(analyticsUiPage());
+      return;
+    }
+    if (urlPath === '/profiles/ui' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS, 'Cache-Control': 'no-store' });
+      res.end(profilesUiPage());
       return;
     }
 

@@ -4,8 +4,9 @@ Local validation on macOS, 2026-10-29:
 
 - `npm run build`: passed.
 - `npm audit --omit=dev --audit-level=high`: zero vulnerabilities.
-- `npm test`: 282/283 passed. The unchanged `rebake-open-pr.mjs` requires GNU `date -d` and fails on macOS. Reproduced against the original upstream checkout at `8155f62`.
+- `npm test`: 283/284 passed after the web-management additions. The unchanged `rebake-open-pr.mjs` requires GNU `date -d` and fails on macOS. Reproduced against the original upstream checkout at `8155f62`.
 - New account-policy, admin API and HTTP/CONNECT/Unix gateway tests passed.
+- Real headless Chrome UI interaction test passed: wrong/correct admin token, profile creation, encoded proxy credentials, sign-in action with stubbed OAuth, disable, metadata edit without revealing/changing the stored proxy password, and disconnect. No real account was used.
 - Real Bun transport integration passed: concurrent per-account proxies, Basic authentication, HTTPS CONNECT, upstream hostname forwarding, proxy outage and no direct fallback.
 - Installed Chrome privacy integration passed with a temporary browser profile and mock Keychain: zero WebRTC candidates, zero STUN packets to the direct test listener, zero direct HTTP hits and zero local DNS transactions for the test hostname. Locale and timezone matched the configured profile.
 - Ubuntu installer, launcher, desktop and CLI wrapper passed shell syntax checks.

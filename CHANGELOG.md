@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Fork: account management in the web UI.** The dashboard links to `/profiles/ui`, with profile creation, proxy settings, isolated sign-in, enable/disable and a CleanIP browser check. Admin credentials stay in page memory; stored proxy passwords are never returned to the browser.
+
 - **Fork: per-account proxy profiles and isolated browser sign-in.** Each profile binds OAuth, refresh and inference to its own HTTP/HTTPS proxy; missing, disabled or broken policy fails closed. Adds profile CLI/admin endpoints, persistent Chromium profiles with DNS/WebRTC protections, and an Ubuntu 24.04 installer with private noVNC access and a network-namespace launcher. Setup instructions: `docs/ubuntu-server.md`.
 
 - **Docs: the README and the landing page caught up.** The test count (280 files, not 241), the source file count (86), and the watcher count (ten since `cc-oauth-health` retired) were stale. Cross-plan failover is now described as what a `--pool-fallback` chain does, not as the default. `headroom-by-plan`, `--family-fallback` and key sockets, all shipped since the last pass, are now mentioned where their neighbours are. Three contributors were missing from the table (#1262, #1376, #1450). `docs/commands.md` listed the `--pool-fallback` and `--family-fallback` rows twice. The 6.18.0 entry below dated `--pool-shared-state` to 6.12.7; it shipped in 6.0.34.
