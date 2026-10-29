@@ -87,7 +87,7 @@ import {
   addAccountViaOAuth,
 } from './accounts.js';
 import { loadNetworkProfile, saveNetworkProfile, listNetworkProfiles, publicNetworkProfile, requireNetworkProfile, validateProfile } from './account-profiles.js';
-import { openProfileBrowser, type ProfileBrowser } from './profile-browser.js';
+import { openProfileBrowser, browserCheckTimeoutMs, type ProfileBrowser } from './profile-browser.js';
 import {
   startAddCodexAccount,
   completeAddCodexAccount,
@@ -308,7 +308,7 @@ const pendingLogins = new Map<string, PendingLogin>();
 // seat and a ChatGPT seat at once (the stores are separate directories).
 const pendingCodexLogins = new Map<string, PendingLogin>();
 const profileLogins = new Set<string>();
-const profileChecks = new Map<string, { browser: ProfileBrowser; timer: NodeJS.Timeout }>();
+const profileChecks = new Map<string, { browser: ProfileBrowser; timer: NodeJS.Timeout | null }>();
 
 function prunePending(now: number): void {
   for (const map of [pendingLogins, pendingCodexLogins]) {
@@ -676,13 +676,14 @@ export async function handleAdminRequest(
       } else if (operation === 'check') {
         requireNetworkProfile(alias);
         if (profileLogins.has(alias) || profileChecks.has(alias)) { send(res, 409, { error: 'This profile browser is already in use' }); return true; }
+        const timeoutMs = browserCheckTimeoutMs();
         const browser = await openProfileBrowser(alias, 'https://cleanip.io/claude');
-        const timer = setTimeout(() => browser.close(), 300_000);
-        timer.unref();
+        const timer = timeoutMs === 0 ? null : setTimeout(() => browser.close(), timeoutMs);
+        timer?.unref();
         profileChecks.set(alias, { browser, timer });
-        void browser.closed.then(() => { clearTimeout(timer); profileChecks.delete(alias); });
+        void browser.closed.then(() => { if (timer) clearTimeout(timer); profileChecks.delete(alias); });
         deps.audit?.({ action: 'profile_check', alias, ok: true, status: 202, remote });
-        send(res, 202, { alias, status: 'browser_open', expires_in_seconds: 300 });
+        send(res, 202, { alias, status: 'browser_open', expires_in_seconds: timeoutMs === 0 ? null : timeoutMs / 1000 });
       } else {
         const enabled = operation === 'enable';
         await saveNetworkProfile({ ...profile, enabled });
@@ -1021,7 +1022,7 @@ export async function handleAdminRequest(
 /** Test-only: clear the pending-login map between cases. */
 export function _resetAdminStateForTest(): void {
   profileLogins.clear();
-  for (const check of profileChecks.values()) { clearTimeout(check.timer); check.browser.close(); }
+  for (const check of profileChecks.values()) { if (check.timer) clearTimeout(check.timer); check.browser.close(); }
   profileChecks.clear();
   pendingLogins.clear();
   pendingCodexLogins.clear();

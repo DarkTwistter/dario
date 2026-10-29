@@ -112,6 +112,7 @@ DARIO_IGNORE_CC_CREDENTIALS=1
 DARIO_BROWSER_EXECUTABLE=/usr/local/libexec/dario/chromium
 DARIO_BROWSER_LAUNCHER=/opt/dario/deploy/ubuntu/browser-launcher.sh
 DARIO_UNSHARE_EXECUTABLE=/usr/local/libexec/dario/unshare
+DARIO_BROWSER_CHECK_TIMEOUT_MINUTES=30
 EOF
   chown root:dario /etc/dario/dario.env
   chmod 0640 /etc/dario/dario.env

@@ -17,6 +17,15 @@ export interface ProfileBrowser {
   evaluate(expression: string): Promise<unknown>;
 }
 
+/** Duration of a manually opened IP-check window. Zero disables automatic closure. */
+export function browserCheckTimeoutMs(raw = process.env.DARIO_BROWSER_CHECK_TIMEOUT_MINUTES): number {
+  if (raw === undefined || raw.trim() === '') return 30 * 60_000;
+  if (!/^\d+$/.test(raw.trim())) throw new Error('DARIO_BROWSER_CHECK_TIMEOUT_MINUTES must be an integer from 0 to 1440 (0 = no automatic closure)');
+  const minutes = Number(raw.trim());
+  if (minutes > 1440) throw new Error('DARIO_BROWSER_CHECK_TIMEOUT_MINUTES must be between 0 and 1440');
+  return minutes * 60_000;
+}
+
 /** The only direct browser request permitted is the exact OAuth callback on loopback. */
 export async function startProfileGateway(alias: string, callbackUrl?: string, options: { unixSocket?: boolean } = {}): Promise<{ url: string; socketPath?: string; close(): void }> {
   const profile = requireNetworkProfile(alias);

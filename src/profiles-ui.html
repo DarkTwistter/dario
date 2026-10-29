@@ -96,7 +96,7 @@ async function reload(){var current=generation,data=await request('/admin/profil
 async function act(p,operation){
   var current=generation;busy.add(p.alias);render();
   message('actionStatus',operation==='login'?'Открывается браузер профиля «'+p.alias+'». Перейдите в браузер сервера и завершите вход в Claude.':operation==='check'?'Открываем CleanIP в браузере сервера…':'Применяем настройку…');
-  try{await request('/admin/profiles/'+encodeURIComponent(p.alias)+'/'+operation,{});if(current!==generation)return;message('actionStatus',operation==='login'?'Аккаунт «'+p.alias+'» авторизован и добавлен в пул.':operation==='check'?'CleanIP открыт в браузере сервера. Окно закроется автоматически через 5 минут.':'Настройка сохранена.');await reload();}
+  try{var result=await request('/admin/profiles/'+encodeURIComponent(p.alias)+'/'+operation,{});if(current!==generation)return;message('actionStatus',operation==='login'?'Аккаунт «'+p.alias+'» авторизован и добавлен в пул.':operation==='check'?'CleanIP открыт в браузере сервера. '+(result.expires_in_seconds==null?'Окно можно закрыть вручную.':'Автозакрытие через '+Math.ceil(result.expires_in_seconds/60)+' мин.'):'Настройка сохранена.');await reload();}
   catch(error){if(current===generation)message('actionStatus',error.message,true);}
   finally{busy.delete(p.alias);if(current===generation&&connected)render();}
 }
