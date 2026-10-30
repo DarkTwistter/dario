@@ -13,7 +13,7 @@ header{border-bottom:1px solid var(--line)}.top{max-width:1240px;margin:auto;pad
 <header><div class="top"><div class="brand">dario <span class="muted">/ аккаунты</span></div><nav><a href="/analytics/ui">Статистика</a><a class="button" href="http://127.0.0.1:6080/vnc.html" target="_blank" rel="noopener noreferrer">Открыть браузер сервера ↗</a></nav></div></header>
 <main class="wrap">
 <h1>Своя прокси для каждого аккаунта</h1>
-<p class="intro">Создайте профиль, укажите прокси и нажмите «Войти». В браузере сервера завершите вход в Claude — аккаунт появится в работающем пуле автоматически.</p>
+<p class="intro">Создайте профиль, укажите прокси и нажмите «Войти». Войдите на своём компьютере через нужный VPN и вставьте код сюда. Также доступен вход в браузере сервера.</p>
 <form id="connection" class="connection">
 <label>Admin-токен Dario<input id="adminToken" type="password" autocomplete="off" required placeholder="DARIO_ADMIN_TOKEN"></label>
 <button class="primary" id="connect" type="submit">Подключиться</button><button id="disconnect" type="button" hidden>Отключиться</button>
@@ -36,7 +36,18 @@ header{border-bottom:1px solid var(--line)}.top{max-width:1240px;margin:auto;pad
 </fieldset>
 </form><div id="formStatus" class="note" role="status" aria-live="polite"></div>
 </section>
-<section class="card"><div class="list-head"><h2>Профили <span id="count" class="muted"></span></h2><button id="refresh" disabled>Обновить</button></div><div id="profiles"><div class="empty">Подключитесь с admin-токеном, чтобы увидеть аккаунты.</div></div><div id="actionStatus" class="note" role="status" aria-live="polite"></div></section>
+<section class="card"><div class="list-head"><h2>Профили <span id="count" class="muted"></span></h2><button id="refresh" disabled>Обновить</button></div><div id="profiles"><div class="empty">Подключитесь с admin-токеном, чтобы увидеть аккаунты.</div></div><section id="manualLogin" hidden style="margin-top:20px;border-top:1px solid var(--line);padding-top:20px">
+<h2 id="manualTitle">Вход на своём компьютере</h2>
+<p>1. Включите нужный VPN. Откройте ссылку в отдельном профиле браузера и войдите в нужный аккаунт Claude.</p>
+<label>Ссылка для входа<input id="manualUrl" readonly autocomplete="off"></label>
+<button id="copyLoginUrl" type="button">Скопировать ссылку</button>
+<p id="manualExpiry" class="muted" style="margin-top:12px"></p>
+<form id="manualCodeForm">
+<label>2. Скопируйте показанный после входа код целиком (code#state) и вставьте сюда<input id="manualCode" type="password" autocomplete="off" spellcheck="false" required></label>
+<div class="actions"><button id="completeManual" class="primary" type="submit">Завершить вход</button><button id="cancelManual" type="button">Отменить вход</button></div>
+</form>
+<p class="muted" style="margin-top:12px">Ссылка действует 10 минут. Обмен кода и работа аккаунта выполняются сервером через прокси профиля. VPN на вашем компьютере управляет только входом в браузере.</p>
+</section><div id="actionStatus" class="note" role="status" aria-live="polite"></div></section>
 </div>
 <p class="footnote">На Ubuntu откройте эту страницу и noVNC через SSH-туннель. Cookies и сессии каждого профиля хранятся отдельно. При отключении прокси прямого соединения с Claude не выполняется.</p>
 </main>
@@ -56,7 +67,7 @@ var DarioProfiles = {
 (function(){
 'use strict';
 var $=function(id){return document.getElementById(id);};
-var token='',connected=false,editing=null,profiles=[],busy=new Set(),generation=0;
+var token='',connected=false,editing=null,profiles=[],busy=new Set(),generation=0,manualAlias=null;
 function message(id,text,error){$(id).textContent=text;$(id).className='note '+(error?'error':'ok');}
 function text(tag,value,cls){var node=document.createElement(tag);node.textContent=value;if(cls)node.className=cls;return node;}
 async function request(path,body){
@@ -86,6 +97,7 @@ function render(){
     function button(label,action,disabled,cls){var b=text('button',label,cls||'');b.type='button';b.disabled=!!disabled;b.addEventListener('click',action);actions.append(b);}
     var running=busy.has(p.alias)||p.loginPending||p.checkOpen;
     button(p.loginPending?'Ожидаем входа…':p.authenticated?'Войти снова':'Войти',function(){act(p,'login');},running||!p.enabled,'primary');
+    button(p.manualLoginPending?'Вставить код':'Войти на своём компьютере',function(){manualStart(p);},!p.enabled||busy.has(p.alias)||(running&&!p.manualLoginPending));
     button('Проверить IP',function(){act(p,'check');},running||!p.enabled);
     button('Настройки',function(){edit(p);},running);
     button(p.enabled?'Отключить':'Включить',function(){act(p,p.enabled?'disable':'enable');},busy.has(p.alias),p.enabled?'danger':'');
@@ -100,13 +112,36 @@ async function act(p,operation){
   catch(error){if(current===generation)message('actionStatus',error.message,true);}
   finally{busy.delete(p.alias);if(current===generation&&connected)render();}
 }
+function clearManual(){manualAlias=null;$('manualLogin').hidden=true;$('manualUrl').value='';$('manualCode').value='';}
+function showManual(alias,url,expires){manualAlias=alias;$('manualLogin').hidden=false;$('manualTitle').textContent='Вход · '+alias;$('manualUrl').value=url||'';$('copyLoginUrl').disabled=!url;$('manualExpiry').textContent='Вставьте код до '+new Date(expires).toLocaleTimeString()+'. После перезапуска Dario потребуется новая ссылка.';}
+async function copyManualUrl(){
+  var value=$('manualUrl').value;if(!value)return;
+  try{if(!navigator.clipboard)throw new Error('clipboard');await navigator.clipboard.writeText(value);message('actionStatus','Ссылка скопирована. Откройте её в браузере через нужный VPN.');}
+  catch(_){$('manualUrl').focus();$('manualUrl').select();message('actionStatus','Браузер не разрешил копирование. Ссылка выделена — нажмите Ctrl+C или ⌘C.');}
+}
+async function manualStart(p){
+  if(p.manualLoginPending){showManual(p.alias,manualAlias===p.alias?$('manualUrl').value:'',p.loginExpiresAt);$('manualCode').focus();return;}
+  var current=generation;busy.add(p.alias);render();
+  try{var result=await request('/admin/login/start',{alias:p.alias});if(current!==generation)return;showManual(p.alias,result.authorize_url,result.expires_at);await copyManualUrl();await reload();}
+  catch(error){if(current===generation)message('actionStatus',error.message,true);}
+  finally{busy.delete(p.alias);if(current===generation&&connected)render();}
+}
+$('copyLoginUrl').addEventListener('click',copyManualUrl);
+$('cancelManual').addEventListener('click',async function(){var current=generation,alias=manualAlias;if(!alias)return;try{await request('/admin/profiles/'+encodeURIComponent(alias)+'/cancel-login',{});if(current!==generation)return;clearManual();message('actionStatus','Вход отменён. Можно создать новую ссылку.');await reload();}catch(error){if(current===generation)message('actionStatus',error.message,true);}});
+$('manualCodeForm').addEventListener('submit',async function(event){
+  event.preventDefault();var current=generation,alias=manualAlias,code=$('manualCode').value.trim();if(!alias||!code)return;
+  $('manualCode').value='';$('completeManual').disabled=true;$('cancelManual').disabled=true;
+  try{await request('/admin/login/complete',{alias:alias,code:code});if(current!==generation)return;clearManual();message('actionStatus','Аккаунт «'+alias+'» авторизован и добавлен в пул.');await reload();}
+  catch(error){if(current===generation){message('actionStatus',error.message+' При необходимости отмените вход и создайте новую ссылку.',true);await reload().catch(function(){});}}
+  finally{$('completeManual').disabled=false;$('cancelManual').disabled=false;}
+});
 $('connection').addEventListener('submit',async function(event){
   event.preventDefault();generation++;token=$('adminToken').value.trim();$('connect').disabled=true;
   try{await reload();connected=true;$('profileFields').disabled=false;$('refresh').disabled=false;$('disconnect').hidden=false;$('adminToken').value='';message('connectionStatus','Подключено. Можно добавлять аккаунты.');}
   catch(error){connected=false;token='';$('profileFields').disabled=true;$('refresh').disabled=true;message('connectionStatus',error.message,true);}
   finally{$('connect').disabled=false;}
 });
-$('disconnect').addEventListener('click',function(){generation++;connected=false;token='';$('adminToken').value='';profiles=[];resetForm();$('profileFields').disabled=true;$('refresh').disabled=true;$('disconnect').hidden=true;$('profiles').replaceChildren(text('div','Подключение закрыто.','empty'));$('count').textContent='';message('connectionStatus','Токен удалён из памяти страницы.');message('actionStatus','');message('formStatus','');});
+$('disconnect').addEventListener('click',function(){generation++;clearManual();connected=false;token='';$('adminToken').value='';profiles=[];resetForm();$('profileFields').disabled=true;$('refresh').disabled=true;$('disconnect').hidden=true;$('profiles').replaceChildren(text('div','Подключение закрыто.','empty'));$('count').textContent='';message('connectionStatus','Токен удалён из памяти страницы.');message('actionStatus','');message('formStatus','');});
 $('cancelEdit').addEventListener('click',function(){resetForm();message('formStatus','');});
 $('refresh').addEventListener('click',function(){reload().catch(function(error){message('actionStatus',error.message,true);});});
 $('profileForm').addEventListener('submit',async function(event){

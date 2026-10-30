@@ -746,9 +746,8 @@ export async function startAddAccount(
   if (!safeAliasPath(alias)) {
     throw new Error(`invalid account alias "${alias}" (allowed: letters, digits, _-. — up to 64 chars, no path separators)`);
   }
-  if (loadNetworkProfile(alias) || process.env.DARIO_REQUIRE_ACCOUNT_PROXY === '1') {
-    throw new Error('Proxy profiles require the isolated browser flow: dario profiles login <alias>');
-  }
+  // Manual authorization happens on the user's computer; server exchanges remain proxy-bound.
+  if (loadNetworkProfile(alias) || process.env.DARIO_REQUIRE_ACCOUNT_PROXY === '1') requireNetworkProfile(alias);
   const cfg = await detectCCOAuthConfig();
   const { codeVerifier, codeChallenge } = generatePKCE();
   // 32-byte state — same constraint as the auto flow. See dario#71.
@@ -775,7 +774,9 @@ export async function completeAddAccount(
   }
   const cfg = await detectCCOAuthConfig();
   const existing = await loadAccount(alias);
-  const binding = { alias, networkProfile: existing?.networkProfile ?? (loadNetworkProfile(alias) ? alias : undefined) };
+  const network = loadNetworkProfile(alias);
+  if (network || process.env.DARIO_REQUIRE_ACCOUNT_PROXY === '1') requireNetworkProfile(alias);
+  const binding = { alias, networkProfile: network ? alias : existing?.networkProfile };
   const tokenRes = await accountFetch(binding)(cfg.tokenUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -803,6 +804,9 @@ export async function completeAddAccount(
   };
 
   const profile = await fetchOAuthProfile(tokens.access_token, accountFetch(binding));
+  if (network?.email && (!profile?.accountEmail || network.email.toLowerCase() !== profile.accountEmail.toLowerCase())) {
+    throw new Error('The signed-in account does not match the profile email, or its identity could not be verified. Start login again.');
+  }
   const others = (await loadAllAccounts()).filter((a) => a.alias !== alias);
   const identity = await chooseClientIdentity(others, profile);
 

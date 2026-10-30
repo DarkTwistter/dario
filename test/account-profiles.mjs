@@ -59,7 +59,8 @@ try {
   const identified = await backfillIdentity(refreshed);
   assert.equal(identified.accountId, 'id-a');
   assert.equal(identified.networkProfile, 'a');
-  await assert.rejects(startAddAccount('a'), /isolated browser/);
+  const manual = await startAddAccount('a');
+  assert(new URL(manual.authorizeUrl).searchParams.has('code_challenge'), 'enabled proxy profiles support manual OAuth');
   // A process-wide proxy must never overwrite an explicit account proxy.
   let seen;
   globalThis.fetch = async (_url, init) => { seen = init.proxy; return new Response('ok'); };

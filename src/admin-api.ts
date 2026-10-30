@@ -10,6 +10,7 @@
  *   POST   /admin/login/start         { alias? }               -> { alias, authorize_url, expires_at }
  *   POST   /admin/login/start-needed  { threshold? }            -> { started: [...], count, truncated? }
  *   POST   /admin/login/complete      { alias, code }            -> { alias, status, expires_at }
+ *   POST   /admin/profiles/:alias/cancel-login {}               -> cancel a pending manual login
  *   POST   /admin/login/complete      { items: [{alias,code}] }  -> { results: [...], count, truncated? }
  *   GET    /admin/accounts                                       -> { accounts: [...], count }
  *   DELETE /admin/accounts/<alias>                               -> { alias, removed }
@@ -282,6 +283,7 @@ interface PendingLogin {
   codeVerifier: string;
   state: string;
   expiresAt: number;
+  profileSnapshot?: string;
 }
 
 const PENDING_TTL_MS = 10 * 60_000;
@@ -349,9 +351,10 @@ async function doStartLogin(
     return { ok: false, status: 429, error: 'too many pending logins; complete or wait for one to expire' };
   }
   try {
+    if (profileLogins.has(alias) || profileChecks.has(alias)) return { ok: false, status: 409, error: 'Profile browser/login is already in use' };
     const { authorizeUrl, codeVerifier, state } = await startAddAccount(alias);
     const expiresAt = now + PENDING_TTL_MS;
-    pendingLogins.set(alias, { codeVerifier, state, expiresAt });
+    pendingLogins.set(alias, { codeVerifier, state, expiresAt, profileSnapshot: JSON.stringify(loadNetworkProfile(alias)) });
     deps.audit?.({ action: 'login_start', ok: true, status: 200, alias, remote });
     return { ok: true, alias, authorizeUrl, expiresAt };
   } catch (err) {
@@ -390,7 +393,12 @@ async function doCompleteLogin(
   if (pastedState && pastedState !== p.state) {
     return { ok: false, status: 400, error: 'state mismatch — code is from a different login attempt' };
   }
+  if (p.profileSnapshot !== JSON.stringify(loadNetworkProfile(alias))) {
+    pendingLogins.delete(alias);
+    return { ok: false, status: 409, error: 'Profile changed; start a new login' };
+  }
   pendingLogins.delete(alias); // single-use, regardless of exchange outcome
+  profileLogins.add(alias);
   try {
     const creds = await completeAddAccount(alias, code, p.codeVerifier, p.state);
     await deps.onAccountsChanged?.();
@@ -400,7 +408,7 @@ async function doCompleteLogin(
     const message = (err as Error).message;
     deps.audit?.({ action: 'login_complete', ok: false, status: 400, alias, remote });
     return { ok: false, status: 400, error: message };
-  }
+  } finally { profileLogins.delete(alias); }
 }
 
 async function doStartCodexLogin(
@@ -547,7 +555,7 @@ export async function handleAdminRequest(
   deps: AdminDeps,
 ): Promise<boolean> {
   const method = req.method ?? 'GET';
-  const profileTarget = /^\/admin\/profiles\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/(login|enable|disable|update|check)$/.exec(urlPath);
+  const profileTarget = /^\/admin\/profiles\/([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\/(login|cancel-login|enable|disable|update|check)$/.exec(urlPath);
   const remote = req.socket?.remoteAddress;
   const isAccountDelete =
     method === 'DELETE' && urlPath.startsWith(ACCOUNTS_PREFIX) && urlPath.length > ACCOUNTS_PREFIX.length;
@@ -623,7 +631,7 @@ export async function handleAdminRequest(
         const profiles = await Promise.all((await listNetworkProfiles()).map(async p => {
           const account = await loadAccount(p.alias);
           return { ...publicNetworkProfile(p), authenticated: !!account, proxyAuthenticated: !!(new URL(p.proxyUrl).username || new URL(p.proxyUrl).password),
-            expiresAt: account?.expiresAt ?? null, loginPending: profileLogins.has(p.alias), checkOpen: profileChecks.has(p.alias) };
+            expiresAt: account?.expiresAt ?? null, loginPending: profileLogins.has(p.alias) || pendingLogins.has(p.alias), manualLoginPending: pendingLogins.has(p.alias), loginExpiresAt: pendingLogins.get(p.alias)?.expiresAt ?? null, checkOpen: profileChecks.has(p.alias) };
         }));
         send(res, 200, { profiles });
         return true;
@@ -648,11 +656,14 @@ export async function handleAdminRequest(
       const [, alias, operation] = profileTarget;
       const profile = loadNetworkProfile(alias);
       if (!profile) { send(res, 404, { error: 'Unknown profile' }); return true; }
-      if (operation === 'login') {
+      if (operation === 'cancel-login') {
+        pendingLogins.delete(alias);
+        send(res, 200, { alias, status: 'cancelled' });
+      } else if (operation === 'login') {
         // Keep this HTTP call pending while the user completes the separate browser flow.
         // Other requests continue normally. The callback binds only on loopback.
         requireNetworkProfile(alias);
-        if (profileLogins.has(alias)) { send(res, 409, { error: 'Login is already in progress for this profile' }); return true; }
+        if (profileLogins.has(alias) || pendingLogins.has(alias)) { send(res, 409, { error: 'Login is already in progress for this profile' }); return true; }
         deps.audit?.({ action: 'login_start', alias, ok: true, status: 200, remote });
         profileLogins.add(alias);
         try {
@@ -662,7 +673,7 @@ export async function handleAdminRequest(
           send(res, 200, { alias, status: 'added', expires_at: creds.expiresAt });
         } finally { profileLogins.delete(alias); }
       } else if (operation === 'update') {
-        if (profileLogins.has(alias) || profileChecks.has(alias)) { send(res, 409, { error: 'Close the profile browser before editing its settings' }); return true; }
+        if (profileLogins.has(alias) || pendingLogins.has(alias) || profileChecks.has(alias)) { send(res, 409, { error: 'Close the profile browser before editing its settings' }); return true; }
         const body = await readJsonBody(req);
         const updated = validateProfile({ ...profile,
           proxyUrl: body.proxyUrl === undefined ? profile.proxyUrl : body.proxyUrl,
@@ -675,7 +686,7 @@ export async function handleAdminRequest(
         send(res, 200, publicNetworkProfile(updated));
       } else if (operation === 'check') {
         requireNetworkProfile(alias);
-        if (profileLogins.has(alias) || profileChecks.has(alias)) { send(res, 409, { error: 'This profile browser is already in use' }); return true; }
+        if (profileLogins.has(alias) || pendingLogins.has(alias) || profileChecks.has(alias)) { send(res, 409, { error: 'This profile browser is already in use' }); return true; }
         const timeoutMs = browserCheckTimeoutMs();
         const browser = await openProfileBrowser(alias, 'https://cleanip.io/claude');
         const timer = timeoutMs === 0 ? null : setTimeout(() => browser.close(), timeoutMs);
@@ -685,6 +696,7 @@ export async function handleAdminRequest(
         deps.audit?.({ action: 'profile_check', alias, ok: true, status: 202, remote });
         send(res, 202, { alias, status: 'browser_open', expires_in_seconds: timeoutMs === 0 ? null : timeoutMs / 1000 });
       } else {
+        pendingLogins.delete(alias);
         const enabled = operation === 'enable';
         await saveNetworkProfile({ ...profile, enabled });
         deps.audit?.({ action: enabled ? 'profile_enable' : 'profile_disable', alias, ok: true, status: 200, remote });

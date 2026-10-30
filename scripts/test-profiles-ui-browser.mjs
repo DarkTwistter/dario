@@ -12,12 +12,19 @@ const { saveNetworkProfile, loadNetworkProfile } = await import('../dist/account
 const { saveAccount } = await import('../dist/accounts.js');
 const { profilesUiPage } = await import('../dist/profiles-ui.js');
 const { openProfileBrowser } = await import('../dist/profile-browser.js');
-const { handleAdminRequest } = await import('../dist/admin-api.js');
+const { handleAdminRequest, _resetAdminStateForTest } = await import('../dist/admin-api.js');
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const seen = [];
 const server = createServer(async (req, res) => {
   seen.push({ path: req.url, method: req.method });
   if (req.url === '/profiles/ui') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(profilesUiPage()); return; }
+  if (req.url === '/admin/login/complete' && req.headers.authorization === 'Bearer ui-admin') {
+    let body='';for await (const chunk of req) body+=chunk;
+    assert.equal(JSON.parse(body).code,'ui-code#ui-state');
+    _resetAdminStateForTest();
+    await saveAccount({ alias: 'work', networkProfile: 'work', accessToken: 'stub-access', refreshToken: 'stub-refresh', expiresAt: Date.now() + 3600000, scopes: [], deviceId: 'stub-device', accountUuid: 'stub-account' });
+    res.setHeader('content-type','application/json');res.end('{"status":"added"}');return;
+  }
   if (req.url === '/admin/profiles/work/login' && req.headers.authorization === 'Bearer ui-admin') {
     await saveAccount({ alias: 'work', networkProfile: 'work', accessToken: 'stub-access', refreshToken: 'stub-refresh', expiresAt: Date.now() + 3600000, scopes: [], deviceId: 'stub-device', accountUuid: 'stub-account' });
     res.setHeader('content-type', 'application/json'); res.end('{"status":"added"}'); return;
@@ -63,6 +70,14 @@ try {
   assert.equal(decodeURIComponent(new URL(policy.proxyUrl).password), 'p@ss:#/word');
   assert.equal(await browser.evaluate(`document.getElementById('proxyPassword').value`), '');
   assert.equal(await browser.evaluate(`document.getElementById('profiles').textContent.includes('p@ss')`), false);
+  await browser.evaluate(`Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw Error('denied')}}});document.querySelectorAll('.profile').forEach(row=>{if(row.querySelector('.alias').textContent==='work')Array.from(row.querySelectorAll('button')).find(b=>b.textContent==='Войти на своём компьютере').click()});true`);
+  await waitFor(`!document.getElementById('manualLogin').hidden&&document.getElementById('manualUrl').value.includes('code_challenge=')`);
+  await waitFor(`document.getElementById('actionStatus').textContent.includes('Ссылка выделена')`);
+  await browser.evaluate(`Object.defineProperty(navigator,'clipboard',{value:{writeText:async value=>{window.copiedLogin=value}}});document.getElementById('copyLoginUrl').click();true`);
+  await waitFor(`window.copiedLogin===document.getElementById('manualUrl').value`);
+  await browser.evaluate(`document.getElementById('manualCode').value='ui-code#ui-state';document.getElementById('manualCodeForm').requestSubmit();true`);
+  await waitFor(`document.getElementById('manualLogin').hidden&&document.getElementById('actionStatus').textContent.includes('добавлен в пул')`);
+  assert.equal(await browser.evaluate(`document.getElementById('manualCode').value`), '');
   await browser.evaluate(`document.querySelectorAll('.profile').forEach(row=>{if(row.querySelector('.alias').textContent==='work')row.querySelector('.primary').click()});true`);
   await waitFor(`document.getElementById('actionStatus').textContent.includes('добавлен в пул')`);
   await browser.evaluate(`document.querySelectorAll('.profile').forEach(row=>{if(row.querySelector('.alias').textContent==='work')Array.from(row.querySelectorAll('button')).find(b=>b.textContent==='Отключить').click()});true`);
@@ -77,7 +92,7 @@ try {
   assert.equal(loadNetworkProfile('work').email, 'changed@example.com');
   await browser.evaluate(`document.getElementById('disconnect').click();true`);
   assert.equal(await browser.evaluate(`document.getElementById('profileFields').disabled`), true);
-  console.log('PASS: real browser admin authentication, create profile, encoded proxy password, sign-in action, disable, edit without revealing credentials, disconnect');
+  console.log('PASS: real browser admin authentication, create profile, encoded proxy password, manual OAuth link, clipboard denial/retry, code completion, server sign-in action, disable, edit without revealing credentials, disconnect');
 } finally {
   browser?.close(); if (browser) await browser.closed;
   proxy.closeAllConnections(); proxy.close(); server.closeAllConnections(); server.close();
