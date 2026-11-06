@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Dario — подключение аккаунта</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;color:#e9edf5;background:#0b101a;font-synthesis:none}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(ellipse at 80% 0%,#1b2945 0,transparent 55%)}main{max-width:780px;margin:auto;padding:48px 24px 64px}header{display:flex;align-items:center;justify-content:space-between;margin-bottom:44px}.brand{font-size:25px;font-weight:750;letter-spacing:-1px}.brand span{color:#9fbfff}.badge{padding:8px 12px;border:1px solid #31415e;border-radius:999px;color:#bad1fa;font-size:13px}h1{font-size:clamp(28px,5vw,40px);letter-spacing:-1.2px;margin:0 0 14px;line-height:1.15}p{line-height:1.65;color:#aab8cd;margin:0 0 22px}.card{background:#121b2c;border:1px solid #29364f;border-radius:18px;padding:26px;margin-top:22px}h2{margin:0 0 18px;font-size:19px;font-weight:650}label{display:block;font-size:14px;margin:18px 0 8px;color:#cbd6e9}input,select,textarea{width:100%;padding:13px;border:1px solid #3a4964;border-radius:9px;background:#0b1321;color:#edf3ff;font:inherit;font-size:15px}textarea{resize:vertical;min-height:96px}input:focus,select:focus,textarea:focus{outline:2px solid #82adff;outline-offset:2px}button,.link{display:inline-block;border:0;border-radius:9px;background:#a9c9ff;color:#101a2e;padding:13px 18px;font:inherit;font-size:14px;font-weight:650;cursor:pointer;text-decoration:none;text-align:center}button:disabled{opacity:.45;cursor:wait}.secondary{background:#25334b;color:#dce9ff}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:18px}.fields{display:grid;grid-template-columns:1fr 1fr;gap:16px}.hint{font-size:13px;margin:10px 0 0;color:#92a3bc}.status{margin:0}.message{margin:20px 0 0;padding:14px 16px;border-radius:9px;background:#1b2a43;white-space:pre-wrap;line-height:1.6}.error{background:#3a222d;color:#ffd3db}code{overflow-wrap:anywhere;font-size:13px;color:#d2e1fc}.endpoint{margin-top:28px;border-top:1px solid #29364f;padding-top:22px}.accounts{list-style:none;padding:0;margin:12px 0 0}.accounts li{padding:8px 0;border-bottom:1px solid #29364f;font-size:14px}#authorize-url{font-size:13px}footer{font-size:12px;color:#8394af;margin-top:28px;line-height:1.7}[hidden]{display:none!important}@media(max-width:540px){main{padding:28px 16px}.card{padding:20px}.fields{grid-template-columns:1fr}header{margin-bottom:32px}.badge{font-size:11px}}
+</style>
+</head>
+<body>
+<main>
+<header><div class="brand">dario<span>.</span></div><span class="badge" id="service">Проверяем сервис…</span></header>
+<h1>Подключите свой аккаунт</h1>
+<p>Создайте профиль с отдельной прокси, затем войдите на другом устройстве и передайте код. Все запросы аккаунта будут идти через прокси его профиля.</p>
+<section class="card" aria-labelledby="status-title"><h2 id="status-title">Состояние подключения</h2><p class="status" id="status" role="status">Загружаем состояние…</p><ul class="accounts" id="accounts" hidden></ul></section>
+<section class="card" aria-labelledby="access-title">
+<h2 id="access-title">Доступ администратора</h2>
+<p class="hint">Для управления аккаунтами нужен ключ DARIO_ADMIN_TOKEN из файла /opt/dario/deploy/.env на сервере.</p>
+<form id="access-form"><label for="token">Ключ администратора</label><input id="token" type="password" autocomplete="off" spellcheck="false" required placeholder="Введите ключ доступа"><div class="row"><button id="unlock" type="submit">Подключиться</button><button id="lock" class="secondary" type="button" hidden>Отключиться</button></div></form>
+<p class="hint">Ключ хранится только в памяти этой страницы. После перезагрузки введите его снова.</p>
+</section>
+<section class="card" aria-labelledby="profile-title">
+<h2 id="profile-title">1. Создайте профиль с прокси</h2>
+<p class="hint">У каждого аккаунта — своя HTTP/HTTPS-прокси. Без неё запросы блокируются. Привязка сохраняется при перезапуске и не меняется во время входа.</p>
+<form id="profile-form"><fieldset id="profile-fields" disabled style="border:0;padding:0;margin:0">
+<div class="fields"><div><label for="provider">Аккаунт</label><select id="provider"><option value="claude">Claude</option><option value="codex">ChatGPT / Codex</option></select></div><div><label for="alias">Название профиля</label><input id="alias" value="main" required pattern="[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}" maxlength="64" autocomplete="off"></div></div>
+<div class="fields"><div><label for="proxy-scheme">Тип прокси</label><select id="proxy-scheme"><option value="http">HTTP</option><option value="https">HTTPS</option></select></div><div><label for="proxy-host">Адрес прокси</label><input id="proxy-host" required placeholder="proxy.example.com" autocomplete="off" spellcheck="false"></div></div>
+<div class="fields"><div><label for="proxy-port">Порт</label><input id="proxy-port" type="number" min="1" max="65535" required placeholder="8080"></div><div><label for="proxy-user">Логин прокси</label><input id="proxy-user" required autocomplete="off" spellcheck="false"></div></div>
+<label for="proxy-password">Пароль прокси</label><input id="proxy-password" type="password" required autocomplete="new-password">
+<div class="row"><button id="create-profile" type="submit">Создать профиль</button></div>
+<p class="hint">Логин и пароль передаются по HTTPS и хранятся на сервере. Список профилей не раскрывает их. Для другой прокси создайте новый профиль.</p>
+</fieldset></form>
+</section>
+<section class="card" aria-labelledby="login-title">
+<h2 id="login-title">2. Войдите через профиль</h2>
+<form id="start-form"><fieldset id="login-fields" disabled style="border:0;padding:0;margin:0"><label for="selected-profile">Профиль аккаунта</label><select id="selected-profile" required><option value="">Сначала создайте профиль</option></select><p id="profile-route" class="hint">Выберите профиль с прокси.</p><div class="row"><button id="test-proxy" type="button" class="secondary">Проверить прокси</button><button id="start" type="submit">Получить ссылку входа</button></div></fieldset></form>
+<div id="pending" hidden><label for="authorize-url">Ссылка для входа на другом устройстве</label><textarea id="authorize-url" readonly rows="3"></textarea><div class="row"><button class="secondary" id="copy" type="button">Скопировать ссылку</button><a class="link secondary" id="authorize-link" target="_blank" rel="noopener noreferrer">Открыть ссылку</a></div><p class="hint" id="instructions"></p><p class="hint" id="expiry"></p>
+<form id="complete-form"><label for="code">Код авторизации</label><textarea id="code" required autocomplete="off" spellcheck="false" placeholder="Вставьте код с другого устройства"></textarea><div class="row"><button id="complete" type="submit">Подтвердить код</button></div></form></div>
+<div class="message" id="message" role="status" hidden></div>
+<div class="endpoint"><p class="hint">Адрес API для ваших инструментов</p><code id="endpoint"></code><p class="hint">Для запросов используйте отдельный ключ DARIO_API_KEY.</p></div>
+</section>
+<footer>Вход выполняется на сайте провайдера. На этом сервере браузер не запускается.</footer>
+</main>
+<script>
+'use strict';
+const el = id => document.getElementById(id);
+let token = '', pending = null, busy = false, profileList = [];
+el('endpoint').textContent = location.origin;
+function message(text, error = false) { el('message').hidden = false; el('message').textContent = text; el('message').classList.toggle('error', error); }
+function resetPending() { pending = null; el('pending').hidden = true; el('code').value = ''; }
+function lock() { token = ''; el('token').value = ''; el('token').disabled = false; el('unlock').hidden = false; el('lock').hidden = true; el('login-fields').disabled = true; el('profile-fields').disabled = true; profileList = []; el('selected-profile').replaceChildren(); el('proxy-password').value = ''; el('proxy-user').value = ''; el('accounts').hidden = true; el('accounts').replaceChildren(); resetPending(); }
+async function api(path, body) {
+  const response = await fetch(path, {method: body === undefined ? 'GET' : 'POST', headers: {'Authorization':'Bearer ' + token, ...(body === undefined ? {} : {'Content-Type':'application/json'})}, body: body === undefined ? undefined : JSON.stringify(body), cache:'no-store', signal:AbortSignal.timeout(35000)});
+  const data = await response.json();
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) { lock(); throw new Error('Ключ администратора не принят. Проверьте DARIO_ADMIN_TOKEN на сервере.'); }
+    if (response.status === 410) { resetPending(); throw new Error('Срок действия входа истёк. Получите новую ссылку.'); }
+    throw new Error(typeof data.error === 'string' ? data.error : data.error?.message || 'Запрос не выполнен (' + response.status + ').');
+  }
+  return data;
+}
+async function status() {
+  try {
+    const live = await fetch('/livez', {cache:'no-store',signal:AbortSignal.timeout(8000)});
+    if (!live.ok) throw new Error('unavailable');
+    el('service').textContent = 'Сервис работает';
+    const response = await fetch('/health', {cache:'no-store',signal:AbortSignal.timeout(8000)});
+    const data = await response.json();
+    el('status').textContent = data.status === 'ok' ? 'API готов к работе.' : 'API пока не готов. Для нового подключения получите ссылку и введите код ниже. Если аккаунт уже был подключён, проверьте его авторизацию.';
+  } catch { el('service').textContent = 'Нет соединения'; el('status').textContent = 'Не удалось связаться с сервисом. Обновите страницу через несколько секунд.'; }
+}
+function selectedProfile() { return profileList.find(profile => profile.provider + '/' + profile.alias === el('selected-profile').value); }
+function profileRoute() {
+  const profile = selectedProfile();
+  el('profile-route').textContent = profile ? 'Прокси: ' + profile.proxy + '. Все действия этого аккаунта выполняются только через неё.' : 'Сначала создайте профиль с прокси.';
+}
+async function profiles(preferred) {
+  const result = await api('/admin/profiles');
+  profileList = result.profiles;
+  const previous = preferred || el('selected-profile').value;
+  el('selected-profile').replaceChildren();
+  profileList.forEach(profile => { const option = document.createElement('option'); option.value = profile.provider + '/' + profile.alias; option.textContent = (profile.provider === 'codex' ? 'ChatGPT / Codex' : 'Claude') + ' · ' + profile.alias + ' · ' + profile.proxy; el('selected-profile').appendChild(option); });
+  if (!profileList.length) { const option = document.createElement('option'); option.value = ''; option.textContent = 'Сначала создайте профиль'; el('selected-profile').appendChild(option); }
+  else if (profileList.some(profile => profile.provider + '/' + profile.alias === previous)) el('selected-profile').value = previous;
+  el('login-fields').disabled = !token || !profileList.length;
+  profileRoute();
+}
+async function accounts() {
+  const results = await Promise.all([api('/admin/accounts'), api('/admin/codex/accounts')]);
+  el('accounts').replaceChildren();
+  results.forEach((result, i) => (result.accounts || []).forEach(account => {
+    const provider = i ? 'codex' : 'claude';
+    const profile = profileList.find(p => p.provider === provider && p.alias === account.alias);
+    const li = document.createElement('li'); li.textContent = (i ? 'ChatGPT / Codex' : 'Claude') + ' · ' + account.alias + (profile ? ' · ' + profile.proxy : ' · нет прокси-профиля: запросы заблокированы'); el('accounts').appendChild(li);
+  }));
+  el('accounts').hidden = false;
+  if (!results.some(result => result.accounts?.length)) { const li = document.createElement('li'); li.textContent = 'Аккаунтов пока нет. Создайте профиль с прокси и войдите через него.'; el('accounts').appendChild(li); }
+}
+async function run(button, action) { if (busy) return; busy = true; button.disabled = true; try { await action(); } catch (error) { message(error.name === 'TimeoutError' ? 'Сервис не ответил вовремя. Обновите состояние перед повторным входом.' : error.message, true); } finally { button.disabled = false; busy = false; } }
+el('access-form').addEventListener('submit', event => { event.preventDefault(); run(el('unlock'), async () => { token = el('token').value.trim(); await profiles(); await accounts(); el('token').value = ''; el('token').disabled = true; el('unlock').hidden = true; el('lock').hidden = false; el('profile-fields').disabled = false; message('Доступ подтверждён. Создайте профиль с прокси или выберите существующий.'); }); });
+el('lock').addEventListener('click', () => { if (!busy) { lock(); message('Доступ администратора отключён.'); } });
+el('profile-form').addEventListener('submit', event => { event.preventDefault(); run(el('create-profile'), async () => {
+  const provider = el('provider').value, alias = el('alias').value.trim();
+  const host = el('proxy-host').value.trim();
+  if (!host || /[\s/@?#]/.test(host)) throw new Error('Введите только адрес прокси, без протокола, логина и пароля.');
+  const proxy = new URL(el('proxy-scheme').value + '://' + host + ':' + el('proxy-port').value);
+  proxy.username = el('proxy-user').value; proxy.password = el('proxy-password').value;
+  await api('/admin/profiles', {provider, alias, proxy_url:proxy.href});
+  el('proxy-password').value = ''; el('proxy-user').value = '';
+  await profiles(provider + '/' + alias); await accounts(); resetPending();
+  message('Профиль создан. Проверьте прокси и получите ссылку входа. Прокси этого профиля не меняется; для другой прокси создайте новый профиль.');
+}); });
+el('selected-profile').addEventListener('change', () => { if (!busy) { resetPending(); profileRoute(); } });
+el('test-proxy').addEventListener('click', () => { run(el('test-proxy'), async () => {
+  const profile = selectedProfile(); if (!profile) throw new Error('Сначала создайте профиль с прокси.');
+  const result = await api('/admin/profiles/test', {provider:profile.provider, alias:profile.alias});
+  message('Прокси отвечает. Соединение с провайдером установлено через неё (HTTP ' + result.upstream_status + ').');
+}); });
+el('start-form').addEventListener('submit', event => { event.preventDefault(); run(el('start'), async () => {
+  resetPending();
+  const profile = selectedProfile(); if (!profile) throw new Error('Сначала создайте профиль с прокси.');
+  await api('/admin/profiles/test', {provider:profile.provider, alias:profile.alias});
+  const provider = profile.provider;
+  const prefix = provider === 'codex' ? '/admin/codex/login' : '/admin/login';
+  const result = await api(prefix + '/start', {alias:profile.alias});
+  const url = new URL(result.authorize_url);
+  const origin = provider === 'codex' ? 'https://auth.openai.com' : 'https://claude.ai';
+  if (url.origin !== origin) throw new Error('Сервис вернул неожиданный адрес авторизации.');
+  pending = {alias:result.alias, prefix, expires:Date.parse(result.expires_at)};
+  el('authorize-url').value = url.href; el('authorize-link').href = url.href;
+  const browserHint = 'Перед открытием ссылки настройте на другом устройстве ту же прокси: ' + profile.proxy + ', с логином и паролем этого профиля. Сервер не может настроить сеть другого устройства. ';
+  el('instructions').textContent = browserHint + (provider === 'codex' ? 'Войдите в ChatGPT. Если после входа localhost не открывается, скопируйте полный адрес страницы и вставьте в поле кода.' : 'Войдите в Claude и скопируйте показанный код. Подойдёт код целиком (code#state) или только код.');
+  el('code').placeholder = provider === 'codex' ? 'Код или полный адрес страницы после входа' : 'Код авторизации';
+  el('expiry').textContent = 'Ссылка действует до ' + new Date(pending.expires).toLocaleTimeString('ru-RU') + '. Повторное получение ссылки отменяет предыдущую попытку.';
+  el('pending').hidden = false; message('Ссылка готова. Откройте её через прокси этого профиля, затем вставьте код ниже.');
+}); });
+el('copy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(el('authorize-url').value); message('Ссылка скопирована.'); } catch { el('authorize-url').focus(); el('authorize-url').select(); message('Выделенная ссылка готова для копирования.'); } });
+el('complete-form').addEventListener('submit', event => { event.preventDefault(); run(el('complete'), async () => { if (!pending || Date.now() >= pending.expires) { resetPending(); throw new Error('Получите новую ссылку входа.'); } const current = pending; const code = el('code').value.trim(); await api(current.prefix + '/complete', {alias:current.alias, code}); resetPending(); message('Аккаунт подключён. API готов принимать запросы.'); await status(); await accounts(); }); });
+status();
+</script>
+</body>
+</html>

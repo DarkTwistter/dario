@@ -53,14 +53,15 @@ import { realpathSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { startAutoOAuthFlow, startManualOAuthFlow, detectHeadlessEnvironment, getStatus, refreshTokens, loadCredentials, readLineFromStdin, parseManualPaste } from './oauth.js';
+import { startManualOAuthFlow, getStatus, refreshTokens, loadCredentials, readLineFromStdin, parseManualPaste } from './oauth.js';
 import { startProxy, sanitizeError, parseModelAliasSpecs } from './proxy.js';
 import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
 import { grantAge, describeGrantAge } from './refresh-grant.js';
-import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, ensureLoginCredentialsInPool, resyncLoginFromCredentialsIfStale, MIGRATED_LOGIN_ALIAS } from './accounts.js';
+import { listAccountAliases, loadAllAccounts, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, ensureLoginCredentialsInPool, resyncLoginFromCredentialsIfStale, MIGRATED_LOGIN_ALIAS } from './accounts.js';
 import { listCodexAccountAliases, loadAllCodexAccounts, startAddCodexAccount, completeAddCodexAccount, removeCodexAccount, parseCodexManualPaste } from './codex-accounts.js';
 import { describeCodexWindow, type CodexUsageView } from './codex-usage.js';
 import { listBackends, saveBackend, removeBackend, defaultBackendBaseUrl, type BackendCredentials } from './openai-backend.js';
+import { installAccountProxyRouting } from './account-proxy.js';
 import { parseOutboundProxy, installOutboundProxyWrapper, type OutboundProxyConfig } from './outbound-proxy.js';
 
 // `args` / `command` at module scope — command handlers below close over
@@ -127,30 +128,16 @@ async function login() {
   console.log('  ───────────────────');
   console.log('');
 
-  const manualFlag = args.includes('--manual') || args.includes('--headless');
-  // --force-reauth skips the existing-credentials short-circuit entirely.
-  // Use when the refresh token is dead and you need a clean OAuth re-auth
-  // without manually deleting credentials.json first.
+  // Code-paste login never starts a proxy; its lifecycle is managed separately.
+  // --manual, --headless and --no-proxy remain accepted for compatibility.
   const forceReauth = args.includes('--force-reauth') || args.includes('--force');
-  // --no-proxy keeps `dario login` to its name — it just does auth, doesn't
-  // try to start the proxy as a side effect. Useful in containerised deploys
-  // where the proxy is the container's CMD and is already running. Implicitly
-  // set by --manual since manual flow is for headless / scripted contexts
-  // where proxy lifecycle is managed externally.
-  const noProxy = args.includes('--no-proxy') || manualFlag;
 
   // Check for existing credentials (Claude Code or dario's own)
   const creds = forceReauth ? null : await loadCredentials();
   if (creds?.claudeAiOauth?.accessToken && creds.claudeAiOauth.expiresAt > Date.now()) {
-    if (noProxy) {
-      console.log('  Found valid credentials. (--no-proxy / --manual: not starting proxy.)');
-      await materializeLoginPool();
-      console.log('');
-      return;
-    }
-    console.log('  Found credentials. Starting proxy...');
-    console.log('');
-    await proxy();
+    console.log('  Found valid credentials.');
+    await materializeLoginPool();
+    console.log('  Run `dario proxy` to start the API proxy.');
     return;
   }
 
@@ -182,43 +169,21 @@ async function login() {
     console.log('');
   }
 
-  // If the user didn't explicitly pick `--manual`, surface a hint when
-  // heuristics suggest the local-callback flow won't work (SSH session,
-  // container). We don't auto-flip — false positives would be more
-  // annoying than false negatives — but the hint keeps users from
-  // waiting for a browser redirect that can't land.
-  if (!manualFlag) {
-    const reason = detectHeadlessEnvironment();
-    if (reason) {
-      console.log(`  Note: ${reason}. If the browser redirect doesn't land,`);
-      console.log('  re-run with: dario login --manual');
-      console.log('');
-    }
-  }
-
   try {
-    const tokens = manualFlag ? await startManualOAuthFlow() : await startAutoOAuthFlow();
+    const tokens = await startManualOAuthFlow();
     const expiresIn = Math.round((tokens.expiresAt - Date.now()) / 60000);
 
     console.log('  Login successful!');
     console.log(`  Token expires in ${expiresIn} minutes (auto-refreshes).`);
     await materializeLoginPool();
     console.log('');
-    if (noProxy) {
-      console.log('  (--no-proxy / --manual: credentials saved, proxy not started.)');
-    } else {
-      console.log('  Run `dario proxy` to start the API proxy.');
-    }
+    console.log('  Run `dario proxy` to start the API proxy.');
     console.log('');
   } catch (err) {
     const msg = sanitizeError(err);
     console.error('');
     console.error(`  Login failed: ${msg}`);
-    if (!manualFlag && /callback server|EADDRINUSE|bind|timed out/i.test(msg)) {
-      console.error('  Hint: try `dario login --manual` for headless / container setups.');
-    } else {
-      console.error('  Try again with `dario login`.');
-    }
+    console.error('  Try again with `dario login`.');
     process.exit(1);
   }
 }
@@ -1530,30 +1495,13 @@ async function accounts() {
     }
 
     console.log('');
-    console.log(`  Adding account "${alias}" to the pool${manualAccountFlag ? ' (manual / headless flow)' : fromKeychain ? ' (importing from OS keychain)' : ''}...`);
+    console.log(`  Adding account "${alias}" to the pool${fromKeychain ? ' (importing from OS keychain)' : ' (code-paste flow)'}...`);
     console.log('');
-
-    // Mirror the heuristic that `dario login` uses: if the user didn't
-    // explicitly pick `--manual` AND we detect SSH / container / no-DISPLAY,
-    // print a hint before opening the browser. Doesn't auto-flip — false
-    // positives are more annoying than false negatives — but the hint keeps
-    // users from waiting for a browser redirect that can't land. Skip the
-    // hint entirely when --from-keychain is set since no browser is opened.
-    if (!manualAccountFlag && !fromKeychain) {
-      const reason = detectHeadlessEnvironment();
-      if (reason) {
-        console.log(`  Note: ${reason}. If the browser redirect doesn't land,`);
-        console.log(`  re-run with: dario accounts add ${alias} --manual`);
-        console.log('');
-      }
-    }
 
     try {
       const creds = fromKeychain
         ? await addAccountFromKeychain(alias, keychainTarget)
-        : manualAccountFlag
-          ? await addAccountViaManualOAuth(alias)
-          : await addAccountViaOAuth(alias);
+        : await addAccountViaManualOAuth(alias);
       const minutes = Math.round((creds.expiresAt - Date.now()) / 60000);
       console.log('');
       console.log(`  Account "${alias}" added.`);
@@ -1591,13 +1539,6 @@ async function accounts() {
       const msg = sanitizeError(err);
       console.error('');
       console.error(`  Failed to add account: ${msg}`);
-      // Targeted hint for callback-server failures — same heuristic as
-      // `dario login`. Auto flow can fail on EADDRINUSE (port already
-      // bound), SSH-tunnel mismatch, or the browser timing out before
-      // the user signs in. `--manual` works in all of those cases.
-      if (!manualAccountFlag && !fromKeychain && /callback server|EADDRINUSE|bind|timed out|did not receive/i.test(msg)) {
-        console.error(`  Hint: try \`dario accounts add ${alias} --manual\` for headless / container setups.`);
-      }
       console.error('');
       process.exit(1);
     }
@@ -1925,14 +1866,11 @@ async function help() {
 
   Usage:
     dario login [--manual] [--no-proxy] [--force-reauth]
-                             Detect credentials + start proxy (or run OAuth).
-                             --manual (alias: --headless) for container / SSH
-                             setups — prints an authorize URL and reads the
-                             code you paste back instead of a local redirect.
-                             --no-proxy stops after auth — do not start the
-                             proxy (implied by --manual). Use this when the
-                             proxy is already running in a separate process /
-                             container so login doesn't collide on the port.
+                             Detect credentials or print an authorize URL.
+                             Open it on another device, then paste the code.
+                             Login saves credentials without starting a proxy.
+                             --manual, --headless and --no-proxy are accepted
+                             for compatibility; code paste is always used.
                              --force-reauth (alias: --force) ignores any
                              existing credentials and runs a fresh OAuth
                              flow — for when the refresh token is dead and
@@ -1952,12 +1890,9 @@ async function help() {
                              (--live: the running proxy's view — status,
                              window, 429s, organization, shared windows)
     dario accounts add NAME [--manual] [--from-keychain[=<target>]]
-                             Add a new account to the pool (runs OAuth flow).
-                             --manual (alias: --headless) prints an authorize
-                             URL and reads the code you paste back — for
-                             container / SSH / no-browser-on-this-machine
-                             setups, or as the on-Windows escape hatch when
-                             the URL dispatch chain truncates query params.
+                             Print an authorize URL and read the code pasted
+                             from another device. --manual / --headless are
+                             accepted for compatibility.
                              --from-keychain skips OAuth and imports an
                              existing Claude Code keychain entry on this
                              host. With no value: uses the only/first match
@@ -3292,6 +3227,8 @@ if (isDirectEntry) {
       // Bun not available, continue with Node
     }
   }
+
+  installAccountProxyRouting();
 
   const handler = commands[command];
   if (!handler) {

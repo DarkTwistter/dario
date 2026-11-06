@@ -13,6 +13,12 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Accounts have immutable HTTP/HTTPS proxy profiles.** Create the provider/alias profile before code-paste login. The container requires a proxy for every account; code exchange, identity lookup, refresh, model discovery, usage and inference keep that binding. Missing or failed proxies block requests instead of connecting directly. Proxy credentials are stored privately and omitted from admin responses.
+
+- **The root URL shows a setup page instead of health JSON.** Connect Claude or ChatGPT by opening a link on another device and pasting its code, using the authenticated admin API. Docker checks `/livez` so an empty account pool does not mark a running service unhealthy; `/health` retains its readiness verdict.
+
+- **OAuth login always uses code paste from another device.** Removed browser launching and local callback servers. `dario login` saves credentials without starting a proxy; `--manual` and `--headless` remain compatible aliases.
+
 - **Docs: the README and the landing page caught up.** The test count (280 files, not 241), the source file count (86), and the watcher count (ten since `cc-oauth-health` retired) were stale. Cross-plan failover is now described as what a `--pool-fallback` chain does, not as the default. `headroom-by-plan`, `--family-fallback` and key sockets, all shipped since the last pass, are now mentioned where their neighbours are. Three contributors were missing from the table (#1262, #1376, #1450). `docs/commands.md` listed the `--pool-fallback` and `--family-fallback` rows twice. The 6.18.0 entry below dated `--pool-shared-state` to 6.12.7; it shipped in 6.0.34.
 
 ## [6.18.2] - 2026-10-27

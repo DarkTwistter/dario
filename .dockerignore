@@ -21,3 +21,5 @@ CODEOWNERS
 .env
 .env.*
 *.local.json
+
+deploy

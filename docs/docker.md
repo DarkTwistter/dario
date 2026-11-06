@@ -59,10 +59,9 @@ stdin and dario writes `~/.dario/credentials.json` into the mounted volume.
 Subsequent container starts find the credentials and the `proxy` subcommand
 uses them directly.
 
-The container detector (`/.dockerenv` + cgroup probe) auto-suggests
-`--manual` if you accidentally run `login` without it — but the suggestion
-prints to stdout and then fails on the localhost bind, so just use `--manual`
-from the start.
+Code paste is the default. `dario login` and `dario accounts add NAME` never
+launch a browser or start a local callback server. `--manual` and `--headless`
+remain accepted for compatibility. Start the proxy separately.
 
 ### Pre-seeding credentials (no interactive container needed)
 

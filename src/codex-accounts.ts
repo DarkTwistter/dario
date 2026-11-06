@@ -1,3 +1,4 @@
+import { withAccountProxy, requireProxyProfile } from './account-proxy.js';
 /**
  * Codex account storage — the "altman" engine (dario#1009).
  *
@@ -154,13 +155,14 @@ export async function startAddCodexAccount(
   if (!safeAliasPath(alias)) {
     throw new Error(`invalid account alias "${alias}" (allowed: letters, digits, _-. — up to 64 chars, no path separators)`);
   }
+  await requireProxyProfile('codex', alias);
   const { codeVerifier, codeChallenge } = generateCodexPKCE();
   const state = base64url(randomBytes(32));
   const authorizeUrl = buildCodexAuthorizeUrl(codeChallenge, state);
   return { authorizeUrl, codeVerifier, state };
 }
 
-export async function completeAddCodexAccount(
+async function completeAddCodexAccountBound(
   alias: string,
   code: string,
   codeVerifier: string,
@@ -193,7 +195,7 @@ export function codexAccountNeedsRefresh(creds: CodexAccountCredentials): boolea
   return Date.now() >= creds.expiresAt - REFRESH_BUFFER_MS;
 }
 
-export async function refreshCodexAccount(creds: CodexAccountCredentials): Promise<CodexAccountCredentials> {
+async function refreshCodexAccountBound(creds: CodexAccountCredentials): Promise<CodexAccountCredentials> {
   const tokens = await refreshCodexAccessToken(creds.refreshToken);
   const updated: CodexAccountCredentials = {
     ...creds,
@@ -698,4 +700,12 @@ export function parseCodexManualPaste(input: string): { code: string; state: str
     code: trimmed.slice(0, hashIdx).trim(),
     state: trimmed.slice(hashIdx + 1).trim(),
   };
+}
+
+export async function completeAddCodexAccount(alias: string, code: string, codeVerifier: string): Promise<CodexAccountCredentials> {
+  return withAccountProxy('codex', alias, () => completeAddCodexAccountBound(alias, code, codeVerifier));
+}
+
+export async function refreshCodexAccount(creds: CodexAccountCredentials): Promise<CodexAccountCredentials> {
+  return withAccountProxy('codex', creds.alias, () => refreshCodexAccountBound(creds));
 }

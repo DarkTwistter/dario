@@ -1,3 +1,4 @@
+import { withAccountProxy, requireProxyProfile } from './account-proxy.js';
 /**
  * Multi-account credential storage.
  *
@@ -21,10 +22,8 @@ import { readFile, mkdir, readdir, unlink } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { detectCCOAuthConfig } from './cc-oauth-detect.js';
 import { loadCredentials, saveCredentialsTokens, buildManualAuthorizeUrl, parseManualPaste, readLineFromStdin, enumerateKeychainCredentials, tokenRefreshDisabled, refreshDisabledError, type KeychainEntry } from './oauth.js';
-import { openBrowser } from './open-browser.js';
 import { redactSecrets } from './redact.js';
 import { durableWriteFile } from './durable-write.js';
 
@@ -314,7 +313,7 @@ export async function regenerateClientIdentity(aliases: readonly string[]): Prom
 const accountRefreshesInFlight = new Map<string, Promise<AccountCredentials>>();
 
 /** Refresh an account's OAuth token using dario's auto-detected CC OAuth config. */
-export async function refreshAccountToken(creds: AccountCredentials): Promise<AccountCredentials> {
+async function refreshAccountTokenBound(creds: AccountCredentials): Promise<AccountCredentials> {
   // Borrow-don't-rotate: the pool path needs the same guard as the legacy one
   // in oauth.ts, and for the same reason — a rotation here logs out every
   // other holder of this account. Guarding only one of the two paths would
@@ -510,154 +509,8 @@ function generatePKCE(): { codeVerifier: string; codeChallenge: string } {
   return { codeVerifier, codeChallenge };
 }
 
-// `openBrowser` lives in src/open-browser.ts — uses execFile + argv array
-// + URL-protocol allowlist instead of shell interpolation. The previous
-// inline `exec(\`start "" "${url}"\`)` pattern would have shelled out
-// any `&` / `|` / `^` / backtick / `$()` in a URL.
-
-/**
- * Interactive OAuth flow that adds a new account to the pool. Uses dario's
- * auto-detected CC OAuth config (same scanner the single-account path uses).
- * Saves to `~/.dario/accounts/<alias>.json` on success.
- */
-export async function addAccountViaOAuth(alias: string): Promise<AccountCredentials> {
-  const cfg = await detectCCOAuthConfig();
-  const { codeVerifier, codeChallenge } = generatePKCE();
-  // 32 random bytes → 43-char base64url state. Matches what CC v2.1.116+
-  // ships in `/login` URLs; Anthropic's `/oauth/authorize` endpoint started
-  // rejecting shorter states with "Invalid request format" on 2026-04-23
-  // (dario#71 repro: URL was byte-equivalent to CC's except state was
-  // 22 chars → reject, 43 chars → accept). RFC 6749 only requires
-  // "non-guessable," so shorter is technically legal — Anthropic's stricter
-  // than spec here. Keep in lockstep with CC's bytes-per-random.
-  const state = base64url(randomBytes(32));
-
-  return new Promise<AccountCredentials>((resolve, reject) => {
-    let port = 0;
-    const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-      try {
-        const url = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
-        if (url.pathname !== '/callback') {
-          res.writeHead(404);
-          res.end();
-          return;
-        }
-
-        const code = url.searchParams.get('code');
-        const returnedState = url.searchParams.get('state');
-
-        if (!code) {
-          res.writeHead(400);
-          res.end('No authorization code received');
-          server.close();
-          reject(new Error('No authorization code received'));
-          return;
-        }
-
-        if (returnedState !== state) {
-          res.writeHead(400);
-          res.end('Invalid state parameter');
-          server.close();
-          reject(new Error('OAuth state mismatch — possible CSRF'));
-          return;
-        }
-
-        res.writeHead(302, {
-          Location: 'https://platform.claude.com/oauth/code/success?app=claude-code',
-        });
-        res.end();
-        server.close();
-
-        // Exchange code for tokens
-        const tokenRes = await fetch(cfg.tokenUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            grant_type: 'authorization_code',
-            client_id: cfg.clientId,
-            code,
-            redirect_uri: `http://localhost:${port}/callback`,
-            code_verifier: codeVerifier,
-            state,
-          }),
-          signal: AbortSignal.timeout(30_000),
-        });
-
-        if (!tokenRes.ok) {
-          const body = await tokenRes.text().catch(() => '');
-          throw new Error(`Token exchange failed (${tokenRes.status}): ${redactSecrets(body.slice(0, 200))}`);
-        }
-
-        const tokens = await tokenRes.json() as {
-          access_token: string;
-          refresh_token: string;
-          expires_in: number;
-          scope?: string;
-        };
-
-        // Who this token is (one GET, never fatal), then which client identity
-        // the alias presents — see chooseClientIdentity.
-        const profile = await fetchOAuthProfile(tokens.access_token);
-        const others = (await loadAllAccounts()).filter((a) => a.alias !== alias);
-        const identity = await chooseClientIdentity(others, profile);
-
-        const creds: AccountCredentials = {
-          alias,
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token,
-          expiresAt: Date.now() + tokens.expires_in * 1000,
-          scopes: tokens.scope?.split(' ') ?? cfg.scopes.split(' '),
-          deviceId: identity.deviceId,
-          accountUuid: identity.accountUuid,
-          identityFrom: identity.identityFrom,
-          grantedAt: Date.now(),
-          ...profileFields(profile),
-        };
-
-        await saveGrantedAccount(creds);
-        resolve(creds);
-      } catch (err) {
-        server.close();
-        reject(err instanceof Error ? err : new Error(String(err)));
-      }
-    });
-
-    server.listen(0, 'localhost', () => {
-      const addr = server.address();
-      port = typeof addr === 'object' && addr ? addr.port : 0;
-
-      const params = new URLSearchParams({
-        code: 'true',
-        client_id: cfg.clientId,
-        response_type: 'code',
-        redirect_uri: `http://localhost:${port}/callback`,
-        scope: cfg.scopes,
-        code_challenge: codeChallenge,
-        code_challenge_method: 'S256',
-        state,
-      });
-
-      const authUrl = `${cfg.authorizeUrl}?${params.toString()}`;
-
-      console.log(`  Opening browser to add account "${alias}"...`);
-      console.log(`  If the browser didn't open, visit:`);
-      console.log(`  ${authUrl}`);
-      console.log();
-
-      try { openBrowser(authUrl); } catch { /* non-fatal: user has the URL printed above */ }
-    });
-
-    server.on('error', (err: Error) => {
-      reject(new Error(`Failed to start OAuth callback server: ${err.message}`));
-    });
-
-    const timeout = setTimeout(() => {
-      server.close();
-      reject(new Error('OAuth flow timed out after 5 minutes. Try `dario accounts add` again.'));
-    }, 300_000);
-    timeout.unref();
-  });
-}
+/** @deprecated Use addAccountViaManualOAuth. All login flows now use code paste. */
+export const addAccountViaOAuth = addAccountViaManualOAuth;
 
 /**
  * Manual / headless flow for `dario accounts add` — the pool-mode counterpart
@@ -665,10 +518,7 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
  * user to paste back `code#state` from Anthropic's success page, exchanges
  * for tokens, saves to `~/.dario/accounts/<alias>.json`.
  *
- * Used when a localhost-callback flow can't reach the dario process — SSH
- * sessions, containers — and as the on-Windows escape hatch when the URL
- * dispatch chain (rundll32 / explorer) can't be relied on to deliver the
- * full URL to the browser.
+ * This is the default OAuth flow on every platform.
  */
 export async function addAccountViaManualOAuth(alias: string): Promise<AccountCredentials> {
   const { authorizeUrl, codeVerifier, state } = await startAddAccount(alias);
@@ -711,6 +561,7 @@ export async function startAddAccount(
   if (!safeAliasPath(alias)) {
     throw new Error(`invalid account alias "${alias}" (allowed: letters, digits, _-. — up to 64 chars, no path separators)`);
   }
+  await requireProxyProfile('claude', alias);
   const cfg = await detectCCOAuthConfig();
   const { codeVerifier, codeChallenge } = generatePKCE();
   // 32-byte state — same constraint as the auto flow. See dario#71.
@@ -726,7 +577,7 @@ export async function startAddAccount(
  * upstream secrets redacted — on a failed exchange. Shared by the CLI and the
  * admin API.
  */
-export async function completeAddAccount(
+async function completeAddAccountBound(
   alias: string,
   code: string,
   codeVerifier: string,
@@ -1100,4 +951,13 @@ async function saveGrantedAccount(creds: AccountCredentials): Promise<void> {
   await mirrorLoginToCredentials(creds).catch((err) => {
     console.error(`[dario] could not mirror the granted ${creds.alias} token to credentials.json: ${err instanceof Error ? err.message : err}`);
   });
+}
+
+/** Keep code exchange and the initial identity lookup on the same profile proxy. */
+export async function completeAddAccount(alias: string, code: string, codeVerifier: string, state: string): Promise<AccountCredentials> {
+  return withAccountProxy('claude', alias, () => completeAddAccountBound(alias, code, codeVerifier, state));
+}
+
+export async function refreshAccountToken(creds: AccountCredentials): Promise<AccountCredentials> {
+  return withAccountProxy('claude', creds.alias, () => refreshAccountTokenBound(creds));
 }

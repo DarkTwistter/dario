@@ -1,3 +1,4 @@
+import { createProxyProfile, listProxyProfiles, publicProxyProfile, testProxyProfile } from './account-proxy.js';
 /**
  * Headless admin API (#599) — an opt-in HTTP control plane for managing the
  * account pool without console access. Mounted at `/admin/*` by the proxy
@@ -557,6 +558,8 @@ export async function handleAdminRequest(
   const keyName = keyTarget === null ? null : isKeyRotate ? keyTarget.slice(0, -'/rotate'.length) : isKeyBudget ? keyTarget.slice(0, -'/budget'.length) : keyTarget;
   const isKeyRevoke = keyTarget !== null && !isKeyRotate && !isKeyBudget && method === 'DELETE';
   const known =
+    urlPath === '/admin/profiles' ||
+    urlPath === '/admin/profiles/test' ||
     urlPath === '/admin/login/start' ||
     urlPath === '/admin/login/start-needed' ||
     urlPath === '/admin/login/complete' ||
@@ -596,7 +599,7 @@ export async function handleAdminRequest(
   // below). That is a deliberate cost-accounting choice, not an oversight: a
   // blanket pre-parse token here would let a single HTTP request move N
   // accounts' credentials for the price of one throttle token.
-  const isMutation = urlPath === '/admin/login/start' || isAccountDelete
+  const isMutation = (urlPath === '/admin/profiles' && method === 'POST') || urlPath === '/admin/profiles/test' || urlPath === '/admin/login/start' || isAccountDelete
     || urlPath === '/admin/codex/login/start' || isCodexAccountDelete
     || (urlPath === '/admin/keys' && method === 'POST') || isKeyRotate || isKeyBudget || isKeyRevoke;
   if (isMutation) {
@@ -608,6 +611,26 @@ export async function handleAdminRequest(
   prunePending(now);
 
   try {
+    if (urlPath === '/admin/profiles' || urlPath === '/admin/profiles/test') {
+      if (urlPath === '/admin/profiles' && method === 'GET') {
+        send(res, 200, {profiles:(await listProxyProfiles()).map(publicProxyProfile)});
+        return true;
+      }
+      if (method !== 'POST') { send(res, 405, {error:'Method not allowed'}); return true; }
+      const body = await readJsonBody(req);
+      const provider = body.provider;
+      const alias = typeof body.alias === 'string' ? body.alias.trim() : '';
+      if (provider !== 'claude' && provider !== 'codex') { send(res, 400, {error:'provider must be claude or codex'}); return true; }
+      if (urlPath.endsWith('/test')) {
+        const result = await testProxyProfile(provider, alias);
+        send(res, 200, {ok:true, upstream_status:result.status});
+      } else {
+        if (typeof body.proxy_url !== 'string') { send(res, 400, {error:'proxy_url is required'}); return true; }
+        const profile = await createProxyProfile(provider, alias, body.proxy_url);
+        send(res, 201, {profile:publicProxyProfile(profile)});
+      }
+      return true;
+    }
     // POST /admin/login/start  { alias? }
     if (urlPath === '/admin/login/start') {
       if (method !== 'POST') { send(res, 405, { error: 'Method not allowed (use POST)' }); return true; }

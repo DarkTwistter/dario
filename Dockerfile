@@ -60,13 +60,15 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 USER dario
 
 ENV DARIO_HOST=0.0.0.0 \
-    DARIO_PORT=3456
+    DARIO_PORT=3456 \
+    DARIO_REQUIRE_ACCOUNT_PROXY=1 \
+    DARIO_NO_LIVE_CAPTURE=1
 
 EXPOSE 3456
 VOLUME ["/home/dario/.dario"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- "http://127.0.0.1:${DARIO_PORT}/health" >/dev/null || exit 1
+  CMD wget -qO- "http://127.0.0.1:${DARIO_PORT}/livez" >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["proxy"]

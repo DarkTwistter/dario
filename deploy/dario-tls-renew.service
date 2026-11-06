@@ -1,0 +1,10 @@
+[Unit]
+Description=Renew Dario HTTPS certificate and reload nginx
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/dario/deploy
+ExecStart=/bin/sh /opt/dario/deploy/renew-tls.sh

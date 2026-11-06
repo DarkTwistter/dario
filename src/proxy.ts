@@ -1,3 +1,5 @@
+import { installAccountProxyRouting } from './account-proxy.js';
+import { homeUiPage } from './home-ui.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID, randomBytes, timingSafeEqual, createHash } from 'node:crypto';
 import { readFileSync, readdirSync, createWriteStream, lstatSync, unlinkSync, chmodSync, openSync, writeSync, closeSync, type WriteStream } from 'node:fs';
@@ -1794,8 +1796,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // implementations (the Claude leg honours opts.fetchImpl, the codex leg is
   // the global fetch), so the counter lives outside both wrappers.
   const chaosState = chaosCut ? chaosCutState(chaosCut) : null;
-  const upstreamFetch: typeof fetch = chaosCut && chaosState ? chaosCutFetch(opts.fetchImpl ?? fetch, chaosCut, chaosState) : (opts.fetchImpl ?? fetch);
-  const codexFetch: typeof fetch = chaosCut && chaosState ? chaosCutFetch(fetch, chaosCut, chaosState) : fetch;
+  installAccountProxyRouting();
+  const accountFetch: typeof fetch = (input, init) => globalThis.fetch(input, init);
+  const upstreamFetch: typeof fetch = chaosCut && chaosState ? chaosCutFetch(opts.fetchImpl ?? accountFetch, chaosCut, chaosState) : (opts.fetchImpl ?? accountFetch);
+  const codexFetch: typeof fetch = chaosCut && chaosState ? chaosCutFetch(accountFetch, chaosCut, chaosState) : accountFetch;
   const upstreamApiKey = (opts.upstreamApiKey ?? process.env.ANTHROPIC_UPSTREAM_API_KEY ?? '').trim();
   // The credits rung's key (credits-rung.ts). Read once here; whether it is
   // ever used depends on the chain naming a `credits:<model>` entry.
@@ -3244,6 +3248,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       return;
     }
 
+    // Public setup shell; the admin API authenticates every account operation.
+    if (urlPath === '/' && (req.method === 'GET' || req.method === 'HEAD')) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS, 'Referrer-Policy': 'no-referrer' });
+      res.end(req.method === 'HEAD' ? undefined : homeUiPage());
+      return;
+    }
+
     // Health check
     //
     // Returns HTTP 503 when OAuth is in a state that will cause every upstream
@@ -3251,7 +3262,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // access token is expired with no usable refresh path. Docker healthchecks
     // and dependent services (`depends_on: service_healthy`) need this to
     // react instead of cheerfully passing while every /v1/messages 401s.
-    if (urlPath === '/health' || urlPath === '/') {
+    if (urlPath === '/health') {
       const s = await currentStatus();
       // Disclose OAuth internals only to trusted callers (#642). This used to
       // key on the presence of the client-suppliable `cf-ray` header and failed

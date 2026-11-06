@@ -4,6 +4,13 @@
 
 # `dario`
 
+This fork uses code-paste OAuth on every platform. Run `dario login` or
+`dario accounts add NAME`, open the printed URL on another device, and paste
+the authorization code. Start `dario proxy` separately. Browser launching
+and local OAuth callback servers have been removed. In the deployed container,
+create a proxy profile first: each account uses its own authenticated HTTP/HTTPS
+proxy, with direct connections disabled. The setup page guides you through it.
+
 ### Your Claude and ChatGPT subscriptions each live inside their own apps.<br/>dario makes them work **everywhere**, spends the plan before the meter, and keeps the receipt.
 
 <p>

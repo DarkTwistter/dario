@@ -5,7 +5,7 @@
  * instead of running the CLI.
  */
 
-export { startAutoOAuthFlow, refreshTokens, getAccessToken, getStatus, loadCredentials } from './oauth.js';
+export { startManualOAuthFlow, startAutoOAuthFlow, refreshTokens, getAccessToken, getStatus, loadCredentials } from './oauth.js';
 export type { OAuthTokens, CredentialsFile } from './oauth.js';
 export { startProxy, sanitizeError } from './proxy.js';
 
@@ -42,3 +42,5 @@ export {
   isOpenAIModel,
 } from './openai-backend.js';
 export type { BackendCredentials } from './openai-backend.js';
+
+export { createProxyProfile, listProxyProfiles, publicProxyProfile, testProxyProfile, withAccountProxy } from './account-proxy.js';

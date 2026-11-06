@@ -23,10 +23,9 @@
  *     CLIENT_ID: "22422756-60c9-4084-8eb7-27705fd5cf9a"
  *     OAUTH_FILE_SUFFIX: "-local-oauth"
  *
- * Dario uses CC's own automatic OAuth flow — the prod client is registered
- * with `http://localhost:${port}/callback` exactly as dario sends. (The
- * "MANUAL_REDIRECT_URL" on platform.claude.com is only used when dario's
- * local HTTP server can't bind a port; dario never hits that path.)
+ * Dario uses the detected client with the manual redirect on
+ * platform.claude.com, so operators can authorize on another device and
+ * paste back a code without running a local callback server.
  *
  * Results are cached per-binary-hash at ~/.dario/cc-oauth-cache-v6.json so
  * startup only re-scans when the user upgrades Claude Code. The cache suffix

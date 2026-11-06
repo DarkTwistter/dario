@@ -106,3 +106,36 @@ curl http://localhost:3456/v1/messages \
 ```
 
 If your VPN provider's status page or dashboard shows the connection, the routing is working. If it doesn't, double-check that dario relaunched under Bun (`dario doctor`'s Runtime/TLS row should say `bun-match`).
+
+## Account profiles on the deployed server
+
+Create a profile before logging in. Each `(provider, alias)` has a private,
+immutable HTTP/HTTPS proxy URL. Profiles live in `~/.dario/proxy-profiles/`;
+proxy credentials have file mode 600 and are omitted from admin responses.
+
+Use the setup page or the authenticated `POST /admin/profiles` endpoint:
+
+```json
+{"provider":"claude","alias":"work","proxy_url":"http://user:password@proxy.example:8080"}
+```
+
+Then start and complete login using the same alias. `provider` is `claude` or
+`codex`. `POST /admin/profiles/test` with `{provider,alias}` checks the provider
+connection through the saved proxy. Missing profiles, proxy authentication
+failures and unreachable proxies never fall back to a direct request.
+
+The container defaults to `DARIO_REQUIRE_ACCOUNT_PROXY=1`. It requires Bun;
+Node fetch is rejected because it ignores Bun's proxy option. Profile routing
+takes precedence over the optional shared `DARIO_UPSTREAM_PROXY`. Tokens are
+resolved to their own profile even for background model and usage requests;
+parallel accounts do not share mutable proxy settings. Failover to another
+account uses that account's own proxy.
+
+On the other device, configure the browser to use the SAME proxy before opening
+the authorization link. Dario cannot control that device's network settings.
+The server-side code exchange, identity lookup, refresh and API traffic use the
+saved profile proxy. Background CLI captures are disabled in the container.
+
+Validation: `node test/account-proxy.mjs`, `node test/admin-profiles.mjs`, and
+`bun test/integration/profile-proxy-network.mjs` (isolated local TLS provider,
+HTTP/HTTPS CONNECT proxies, including redirects, streaming and failed proxies).
