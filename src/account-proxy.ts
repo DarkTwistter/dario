@@ -1,3 +1,4 @@
+import { curlProfileIp, diagnosticStart, diagnosticResponse, logProxyDiagnostic, redactDiagnostic, type ProxyDiagnostic } from './proxy-diagnostics.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdir, readdir, readFile, open } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
@@ -102,8 +103,13 @@ async function runWithAccountProxy<T>(provider: ProfileProvider, alias: string, 
   return context.run(profile, action);
 }
 function assertProxyRuntime(): void {
-  if (typeof (globalThis as {Bun?: unknown}).Bun === 'undefined') {
+  const bun = (globalThis as {Bun?: {version?: string}}).Bun;
+  if (!bun) {
     throw new Error('Account proxies require Bun. Refusing to send account requests with Node fetch, which ignores proxy settings.');
+  }
+  const version = /^([0-9]+)\.([0-9]+)\.([0-9]+)(?:$|[+-])/.exec(bun.version ?? '');
+  if (!version || Number(version[1]) < 1 || (Number(version[1]) === 1 && (Number(version[2]) < 4 || (Number(version[2]) === 4 && Number(version[3]) < 4)))) {
+    throw new Error('Account proxies require Bun >= 1.4.4 to disable NO_PROXY bypass reliably. Direct requests are disabled.');
   }
 }
 function headersFor(input: RequestInfo | URL, init?: RequestInit): Headers {
@@ -157,7 +163,7 @@ export function createAccountProxyFetch(baseFetch: typeof fetch): typeof fetch {
     if (profile) {
       assertProxyRuntime();
       // Override caller-supplied proxy settings. Never allow a per-request direct escape.
-      const options = {...init, proxy:profile.proxyUrl} as RequestInit;
+      const options = {...init, proxy:{url:profile.proxyUrl, respectNoProxy:false}} as RequestInit;
       try { return await baseFetch(input, options); }
       catch { throw new Error(`Proxy request failed for ${profile.provider}/${profile.alias}. Direct connection is disabled.`); }
     }
@@ -171,13 +177,31 @@ export function installAccountProxyRouting(): void {
   globalThis.fetch = createAccountProxyFetch(globalThis.fetch);
   installed = true;
 }
-export async function testProxyProfile(provider: ProfileProvider, alias: string): Promise<{status: number}> {
+export async function testProxyProfile(provider: ProfileProvider, alias: string): Promise<{status: number; diagnostic: ProxyDiagnostic}> {
   const profile = await loadProxyProfile(provider, alias);
   if (!profile) throw new Error('Proxy profile does not exist.');
-  return withAccountProxy(provider, alias, async () => {
-    const url = provider === 'claude' ? 'https://claude.ai/' : 'https://auth.openai.com/';
-    const response = await fetch(url, {method:'HEAD', redirect:'manual', signal:AbortSignal.timeout(15000)});
-    if (response.status === 407) throw new Error('Proxy authentication failed. Check its username and password.');
-    return {status:response.status};
-  });
+  const url = provider === 'claude' ? 'https://claude.ai/' : 'https://auth.openai.com/';
+  const diagnostic = diagnosticStart(profile, url, 'profile-fetch');
+  const started = Date.now();
+  try {
+    await withAccountProxy(provider, alias, async () => {
+      const response = await fetch(url, {method:'GET', headers:diagnostic.request.headers, redirect:'manual', signal:AbortSignal.timeout(15000)});
+      diagnostic.response = await diagnosticResponse(response, profile);
+      diagnostic.proxy_reachable = response.status !== 407;
+      diagnostic.provider_accessible = response.status >= 200 && response.status < 400;
+      if (!diagnostic.provider_accessible) diagnostic.error = response.status === 407
+        ? 'Proxy authentication failed. Check its username and password.'
+        : `Provider returned HTTP ${response.status}. A proxy connection does not confirm provider access.`;
+    });
+  } catch (error) {
+    diagnostic.error = redactDiagnostic(error instanceof Error ? error.message : 'Proxy test failed.', profile);
+  }
+  diagnostic.duration_ms = Date.now() - started;
+  logProxyDiagnostic(diagnostic);
+  return {status:diagnostic.response?.status ?? 0, diagnostic};
+}
+export async function testProxyProfileIp(provider: ProfileProvider, alias: string): Promise<ProxyDiagnostic> {
+  const profile = await loadProxyProfile(provider, alias);
+  if (!profile) throw new Error('Proxy profile does not exist.');
+  return curlProfileIp(profile);
 }

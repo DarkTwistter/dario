@@ -55,8 +55,26 @@ create a new profile with a different alias for a new binding.
 
 Admin endpoints: `GET /admin/profiles`, `POST /admin/profiles` with
 `{provider:"claude"|"codex",alias,proxy_url}`, and `POST /admin/profiles/test`
-with `{provider,alias}`. The test sends a HEAD request to the provider through
-the profile's proxy and never returns proxy credentials.
+with `{provider,alias}`. The provider test sends GET to the public provider page
+through the profile's proxy. A 403 is reported as a provider refusal, not a ready
+account. `POST /admin/profiles/ip` runs real `curl https://2ip.io/` through that
+same stored proxy, with curlrc and NO_PROXY bypass disabled. Proxy credentials
+are provided on stdin, never in command arguments. Both checks return a trace
+ID, request/response diagnostics and a bounded, redacted response preview.
+The setup page displays the external IP and expandable diagnostics next to the
+proxy test. Structured `[dario] proxy-check` events are in container logs:
+
+```sh
+docker compose logs --since 15m dario | grep 'proxy-check'
+```
+
+Account traffic requires Bun >= 1.4.4. The image pins this runtime and includes
+curl. Every account request sets `proxy: {url: profile.proxyUrl,
+respectNoProxy: false}` and overrides client proxy options. Missing profiles,
+ambiguous credential bindings, unavailable proxies and older runtimes fail
+closed; no direct retry is made. The real CONNECT integration test also sets
+both `NO_PROXY=*` and `no_proxy=*` and exercises OAuth, refresh, inference,
+streaming, curl, and missing/dead proxies, asserting zero direct connections.
 The page keeps the admin token in memory only. `/livez` checks the running
 server; `/health` reports readiness and returns 503 until an account is usable.
 

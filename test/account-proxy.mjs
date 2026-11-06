@@ -7,13 +7,13 @@ const home = await mkdtemp(join(tmpdir(), 'dario-account-proxy-'));
 Object.assign(process.env, {HOME:home, USERPROFILE:home, DARIO_REQUIRE_ACCOUNT_PROXY:'1', DARIO_IGNORE_CC_CREDENTIALS:'1', DARIO_OAUTH_TOKEN_URL:'https://platform.claude.com/mock-token', DARIO_CODEX_TOKEN_URL:'https://auth.openai.com/mock-token'});
 // This suite inspects fetch options. The real runtime/proxy socket contract is tested in integration/profile-proxy-network.mjs.
 const savedFetch = globalThis.fetch;
-globalThis.Bun = {};
+globalThis.Bun = {version:'1.4.4'};
 const calls = [];
 let fail = false;
 const jwt = name => 'e30.' + Buffer.from(JSON.stringify({sub:name})).toString('base64url') + '.sig';
 const claudeToken = jwt('claude'), codexToken = jwt('codex');
 globalThis.fetch = async (url, init) => {
-  calls.push({url:String(url), proxy:init?.proxy, authorization:new Headers(init?.headers).get('authorization'), body:String(init?.body ?? '')});
+  calls.push({url:String(url), proxy:init?.proxy?.url ?? init?.proxy, authorization:new Headers(init?.headers).get('authorization'), body:String(init?.body ?? '')});
   if (fail) throw new Error('network error at http://private-user:private-password@proxy');
   const isCodex = String(url).includes('openai.com');
   if (String(url).endsWith('mock-token')) return Response.json({access_token:isCodex?codexToken:claudeToken,refresh_token:isCodex?'codex-refresh':'claude-refresh',expires_in:3600,scope:'user:inference'});
@@ -79,6 +79,8 @@ try {
   const before=calls.length;
   await assert.rejects(completeAddAccount('a','code','verifier','state'),/Create proxy profile/);
   assert.equal(calls.length,before);
+  globalThis.Bun.version='1.3.12';
+  await assert.rejects(profiles.withAccountProxy('codex','b',()=>fetch('https://auth.openai.com/token')),/Bun >= 1.4.4/);
   delete globalThis.Bun;
   await assert.rejects(profiles.withAccountProxy('codex','b',()=>fetch('https://auth.openai.com/token')),/require Bun|Refusing/);
   console.log('PASS account proxy: profile first, secret redaction, OAuth and identity, refresh, 40 concurrent requests, models, usage, global proxy precedence, missing/dead proxy, no direct fallback, Node refusal');

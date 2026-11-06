@@ -35,10 +35,11 @@
 </section>
 <section class="card" aria-labelledby="login-title">
 <h2 id="login-title">2. Войдите через профиль</h2>
-<form id="start-form"><fieldset id="login-fields" disabled style="border:0;padding:0;margin:0"><label for="selected-profile">Профиль аккаунта</label><select id="selected-profile" required><option value="">Сначала создайте профиль</option></select><p id="profile-route" class="hint">Выберите профиль с прокси.</p><div class="row"><button id="test-proxy" type="button" class="secondary">Проверить прокси</button><button id="start" type="submit">Получить ссылку входа</button></div></fieldset></form>
+<form id="start-form"><fieldset id="login-fields" disabled style="border:0;padding:0;margin:0"><label for="selected-profile">Профиль аккаунта</label><select id="selected-profile" required><option value="">Сначала создайте профиль</option></select><p id="profile-route" class="hint">Выберите профиль с прокси.</p><div class="row"><button id="test-proxy" type="button" class="secondary">Проверить прокси</button><button id="test-proxy-ip" type="button" class="secondary">Проверить внешний IP · 2ip.io</button><button id="start" type="submit">Получить ссылку входа</button></div></fieldset></form>
 <div id="pending" hidden><label for="authorize-url">Ссылка для входа на другом устройстве</label><textarea id="authorize-url" readonly rows="3"></textarea><div class="row"><button class="secondary" id="copy" type="button">Скопировать ссылку</button><a class="link secondary" id="authorize-link" target="_blank" rel="noopener noreferrer">Открыть ссылку</a></div><p class="hint" id="instructions"></p><p class="hint" id="expiry"></p>
 <form id="complete-form"><label for="code">Код авторизации</label><textarea id="code" required autocomplete="off" spellcheck="false" placeholder="Вставьте код с другого устройства"></textarea><div class="row"><button id="complete" type="submit">Подтвердить код</button></div></form></div>
 <div class="message" id="message" role="status" hidden></div>
+<details id="proxy-diagnostics" class="endpoint" hidden><summary>Запрос, ответ и логи последней проверки</summary><pre id="proxy-diagnostic-output" style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:480px;overflow:auto;font-size:12px;line-height:1.6"></pre></details>
 <div class="endpoint"><p class="hint">Адрес API для ваших инструментов</p><code id="endpoint"></code><p class="hint">Для запросов используйте отдельный ключ DARIO_API_KEY.</p></div>
 </section>
 <footer>Вход выполняется на сайте провайдера. На этом сервере браузер не запускается.</footer>
@@ -49,8 +50,15 @@ const el = id => document.getElementById(id);
 let token = '', pending = null, busy = false, profileList = [];
 el('endpoint').textContent = location.origin;
 function message(text, error = false) { el('message').hidden = false; el('message').textContent = text; el('message').classList.toggle('error', error); }
+function showProxyDiagnostic(result) {
+  const diagnostic = result.diagnostic;
+  if (!diagnostic) return;
+  el('proxy-diagnostics').hidden = false; el('proxy-diagnostics').open = true;
+  el('proxy-diagnostic-output').textContent = JSON.stringify(diagnostic, null, 2);
+}
+function clearProxyDiagnostic() { el('proxy-diagnostics').hidden = true; el('proxy-diagnostic-output').textContent = ''; }
 function resetPending() { pending = null; el('pending').hidden = true; el('code').value = ''; }
-function lock() { token = ''; el('token').value = ''; el('token').disabled = false; el('unlock').hidden = false; el('lock').hidden = true; el('login-fields').disabled = true; el('profile-fields').disabled = true; profileList = []; el('selected-profile').replaceChildren(); el('proxy-password').value = ''; el('proxy-user').value = ''; el('accounts').hidden = true; el('accounts').replaceChildren(); resetPending(); }
+function lock() { clearProxyDiagnostic(); token = ''; el('token').value = ''; el('token').disabled = false; el('unlock').hidden = false; el('lock').hidden = true; el('login-fields').disabled = true; el('profile-fields').disabled = true; profileList = []; el('selected-profile').replaceChildren(); el('proxy-password').value = ''; el('proxy-user').value = ''; el('accounts').hidden = true; el('accounts').replaceChildren(); resetPending(); }
 async function api(path, body) {
   const response = await fetch(path, {method: body === undefined ? 'GET' : 'POST', headers: {'Authorization':'Bearer ' + token, ...(body === undefined ? {} : {'Content-Type':'application/json'})}, body: body === undefined ? undefined : JSON.stringify(body), cache:'no-store', signal:AbortSignal.timeout(35000)});
   const data = await response.json();
@@ -112,16 +120,33 @@ el('profile-form').addEventListener('submit', event => { event.preventDefault();
   await profiles(provider + '/' + alias); await accounts(); resetPending();
   message('Профиль создан. Проверьте прокси и получите ссылку входа. Прокси этого профиля не меняется; для другой прокси создайте новый профиль.');
 }); });
-el('selected-profile').addEventListener('change', () => { if (!busy) { resetPending(); profileRoute(); } });
+el('selected-profile').addEventListener('change', () => { if (!busy) { resetPending(); clearProxyDiagnostic(); profileRoute(); } });
 el('test-proxy').addEventListener('click', () => { run(el('test-proxy'), async () => {
   const profile = selectedProfile(); if (!profile) throw new Error('Сначала создайте профиль с прокси.');
   const result = await api('/admin/profiles/test', {provider:profile.provider, alias:profile.alias});
-  message('Прокси отвечает. Соединение с провайдером установлено через неё (HTTP ' + result.upstream_status + ').');
+  showProxyDiagnostic(result);
+  const diagnostic = result.diagnostic;
+  if (!diagnostic.proxy_reachable) { message('Соединение через прокси не установлено. ' + (diagnostic.error || ''), true); return; }
+  message(diagnostic.provider_accessible
+    ? 'Прокси доступна. Провайдер ответил HTTP ' + result.upstream_status + '. Это проверка публичной страницы, без авторизации аккаунта.'
+    : 'Прокси доступна, но провайдер отказал в доступе (HTTP ' + result.upstream_status + '). Проверьте ответ ниже. Готовность аккаунта не подтверждена.', !diagnostic.provider_accessible);
+}); });
+el('test-proxy-ip').addEventListener('click', () => { run(el('test-proxy-ip'), async () => {
+  const profile = selectedProfile(); if (!profile) throw new Error('Сначала создайте профиль с прокси.');
+  clearProxyDiagnostic();
+  const result = await api('/admin/profiles/ip', {provider:profile.provider, alias:profile.alias});
+  showProxyDiagnostic(result);
+  const diagnostic = result.diagnostic;
+  message(diagnostic.observed_ip
+    ? 'Внешний IP выбранного профиля: ' + diagnostic.observed_ip + '. Ответ curl https://2ip.io/ через прокси ' + diagnostic.proxy + '.'
+    : diagnostic.error || '2ip.io не вернул IP в текстовом формате. Смотрите HTTP-ответ и вывод curl ниже.', !diagnostic.observed_ip);
 }); });
 el('start-form').addEventListener('submit', event => { event.preventDefault(); run(el('start'), async () => {
   resetPending();
   const profile = selectedProfile(); if (!profile) throw new Error('Сначала создайте профиль с прокси.');
-  await api('/admin/profiles/test', {provider:profile.provider, alias:profile.alias});
+  const check = await api('/admin/profiles/test', {provider:profile.provider, alias:profile.alias});
+  showProxyDiagnostic(check);
+  if (!check.diagnostic.proxy_reachable) throw new Error(check.diagnostic.error || 'Соединение через прокси не установлено.');
   const provider = profile.provider;
   const prefix = provider === 'codex' ? '/admin/codex/login' : '/admin/login';
   const result = await api(prefix + '/start', {alias:profile.alias});

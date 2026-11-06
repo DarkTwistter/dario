@@ -11,12 +11,12 @@ FROM node:26-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f8
 
 # su-exec is the alpine package that lets the entrypoint drop privileges
 # from root → dario after the volume self-heal. ~10KB; no shell, no PAM.
-RUN apk add --no-cache su-exec
+RUN apk add --no-cache su-exec curl
 
 # Bun ships dario's runtime TLS fingerprint — without it, dario auto-detects
 # Node and falls back to bun-not-found mode. Copying the static binary from
-# oven/bun:1-alpine keeps the runtime image free of bun's build deps.
-COPY --from=oven/bun:1-alpine /usr/local/bin/bun /usr/local/bin/bun
+# oven/bun:1.4.4-alpine keeps the runtime image free of bun's build deps.
+COPY --from=oven/bun:1.4.4-alpine /usr/local/bin/bun /usr/local/bin/bun
 
 RUN addgroup -S dario \
  && adduser -S -G dario -h /home/dario dario \

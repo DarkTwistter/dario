@@ -1,4 +1,4 @@
-import { createProxyProfile, listProxyProfiles, publicProxyProfile, testProxyProfile } from './account-proxy.js';
+import { createProxyProfile, listProxyProfiles, publicProxyProfile, testProxyProfile, testProxyProfileIp } from './account-proxy.js';
 /**
  * Headless admin API (#599) — an opt-in HTTP control plane for managing the
  * account pool without console access. Mounted at `/admin/*` by the proxy
@@ -560,6 +560,7 @@ export async function handleAdminRequest(
   const known =
     urlPath === '/admin/profiles' ||
     urlPath === '/admin/profiles/test' ||
+    urlPath === '/admin/profiles/ip' ||
     urlPath === '/admin/login/start' ||
     urlPath === '/admin/login/start-needed' ||
     urlPath === '/admin/login/complete' ||
@@ -599,7 +600,7 @@ export async function handleAdminRequest(
   // below). That is a deliberate cost-accounting choice, not an oversight: a
   // blanket pre-parse token here would let a single HTTP request move N
   // accounts' credentials for the price of one throttle token.
-  const isMutation = (urlPath === '/admin/profiles' && method === 'POST') || urlPath === '/admin/profiles/test' || urlPath === '/admin/login/start' || isAccountDelete
+  const isMutation = (urlPath === '/admin/profiles' && method === 'POST') || urlPath === '/admin/profiles/test' || urlPath === '/admin/profiles/ip' || urlPath === '/admin/login/start' || isAccountDelete
     || urlPath === '/admin/codex/login/start' || isCodexAccountDelete
     || (urlPath === '/admin/keys' && method === 'POST') || isKeyRotate || isKeyBudget || isKeyRevoke;
   if (isMutation) {
@@ -611,7 +612,7 @@ export async function handleAdminRequest(
   prunePending(now);
 
   try {
-    if (urlPath === '/admin/profiles' || urlPath === '/admin/profiles/test') {
+    if (urlPath === '/admin/profiles' || urlPath === '/admin/profiles/test' || urlPath === '/admin/profiles/ip') {
       if (urlPath === '/admin/profiles' && method === 'GET') {
         send(res, 200, {profiles:(await listProxyProfiles()).map(publicProxyProfile)});
         return true;
@@ -621,9 +622,12 @@ export async function handleAdminRequest(
       const provider = body.provider;
       const alias = typeof body.alias === 'string' ? body.alias.trim() : '';
       if (provider !== 'claude' && provider !== 'codex') { send(res, 400, {error:'provider must be claude or codex'}); return true; }
-      if (urlPath.endsWith('/test')) {
+      if (urlPath.endsWith('/ip')) {
+        const diagnostic = await testProxyProfileIp(provider, alias);
+        send(res, 200, {ok:diagnostic.provider_accessible, diagnostic});
+      } else if (urlPath.endsWith('/test')) {
         const result = await testProxyProfile(provider, alias);
-        send(res, 200, {ok:true, upstream_status:result.status});
+        send(res, 200, {ok:result.diagnostic.provider_accessible, upstream_status:result.status, diagnostic:result.diagnostic});
       } else {
         if (typeof body.proxy_url !== 'string') { send(res, 400, {error:'proxy_url is required'}); return true; }
         const profile = await createProxyProfile(provider, alias, body.proxy_url);

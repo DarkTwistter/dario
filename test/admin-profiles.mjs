@@ -5,10 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const home=await mkdtemp(join(tmpdir(),'dario-admin-profiles-'));
 Object.assign(process.env,{HOME:home,USERPROFILE:home,DARIO_REQUIRE_ACCOUNT_PROXY:'1',DARIO_IGNORE_CC_CREDENTIALS:'1'});
-globalThis.Bun={};
+globalThis.Bun={version:'1.4.4'};
 const originalFetch=globalThis.fetch;
 let requests=0;
-globalThis.fetch=async(url,init)=>{requests++;assert.equal(init.proxy,'http://alice:secret@proxy.invalid:8080/');return new Response(null,{status:200});};
+globalThis.fetch=async(url,init)=>{requests++;assert.deepEqual(init.proxy,{url:'http://alice:secret@proxy.invalid:8080/',respectNoProxy:false});return new Response(null,{status:200});};
 try{
  const {handleAdminRequest}=await import('../dist/admin-api.js');
  async function call(path,body,token='admin',method=body===undefined?'GET':'POST'){
@@ -20,6 +20,9 @@ try{
  }
  assert.equal((await call('/admin/profiles',undefined,'wrong')).status,401);
  assert.equal((await call('/admin/profiles',{provider:'claude',alias:'a',proxy_url:'http://alice:secret@proxy.invalid:8080'},'wrong')).status,401);
+ assert.equal((await call('/admin/profiles/ip',{provider:'claude',alias:'a'},'wrong')).status,401);
+ assert.equal((await call('/admin/profiles/ip',undefined,'admin','GET')).status,405);
+ assert.equal((await call('/admin/profiles/ip',{provider:'claude',alias:'missing'})).status,400);
  assert.deepEqual((await call('/admin/profiles')).json.profiles,[]);
  assert.equal((await call('/admin/login/start',{alias:'a'})).status,400);
  assert.equal((await call('/admin/codex/login/start',{alias:'a'})).status,400);

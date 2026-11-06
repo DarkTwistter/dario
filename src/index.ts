@@ -43,4 +43,4 @@ export {
 } from './openai-backend.js';
 export type { BackendCredentials } from './openai-backend.js';
 
-export { createProxyProfile, listProxyProfiles, publicProxyProfile, testProxyProfile, withAccountProxy } from './account-proxy.js';
+export { createProxyProfile, listProxyProfiles, publicProxyProfile, testProxyProfile, testProxyProfileIp, withAccountProxy } from './account-proxy.js';
